@@ -6,6 +6,7 @@ final class MouthEngine {
     private var timer: DispatchSourceTimer?
 
     var onSessionsChanged: (([CodexActiveSession]) -> Void)?
+    var onNewAssistantMessage: ((CodexAssistantMessageEvent) -> Void)?
 
     private let iso = ISO8601DateFormatter()
 
@@ -18,6 +19,8 @@ final class MouthEngine {
         var fileModificationDate: Date?
         var fileSizeBytes: UInt64?
         var readOffset: UInt64
+        var pendingLine: String
+        var isPrimed: Bool
         var latestAssistantText: String?
         var latestAssistantAt: Date?
     }
@@ -201,28 +204,38 @@ final class MouthEngine {
                 return size > maxInitialScanBytes ? (size - maxInitialScanBytes) : 0
             }()
 
-            var sw = SessionWatch(
-                url: sessionURL,
-                sessionID: sessionID,
-                watcher: watcher,
-                pids: [pid],
-                lastChangeAt: nil,
-                fileModificationDate: mtime,
-                fileSizeBytes: size,
-                readOffset: initialOffset,
-                latestAssistantText: nil,
-                latestAssistantAt: nil
-            )
+	            var sw = SessionWatch(
+	                url: sessionURL,
+	                sessionID: sessionID,
+	                watcher: watcher,
+	                pids: [pid],
+	                lastChangeAt: nil,
+	                fileModificationDate: mtime,
+	                fileSizeBytes: size,
+	                readOffset: initialOffset,
+	                pendingLine: "",
+	                isPrimed: false,
+	                latestAssistantText: nil,
+	                latestAssistantAt: nil
+	            )
 
-            // Initialize latest assistant message by scanning the tail chunk.
-            var newOffset = initialOffset
-            if let parsed = parseLatestAssistantMessage(path: path, fromOffset: initialOffset, newOffsetOut: &newOffset) {
-                sw.latestAssistantText = parsed.text
-                sw.latestAssistantAt = parsed.at
-            }
-            sw.readOffset = newOffset
+	            // Initialize latest assistant message by scanning the tail chunk.
+	            var newOffset = initialOffset
+	            let initialMessages = parseAssistantMessages(
+	                path: path,
+	                fromOffset: initialOffset,
+	                dropFirstPartialLine: initialOffset > 0,
+	                pendingLine: &sw.pendingLine,
+	                newOffsetOut: &newOffset
+	            )
+	            if let last = initialMessages.last {
+	                sw.latestAssistantText = last.text
+	                sw.latestAssistantAt = last.at
+	            }
+	            sw.readOffset = newOffset
+	            sw.isPrimed = true
 
-            sessionWatchesByPath[path] = sw
+	            sessionWatchesByPath[path] = sw
         } catch {
             log("failed to watch session file: \(path) error=\(error)")
         }
@@ -313,26 +326,62 @@ final class MouthEngine {
 
     private func pollWatchedFiles() {
         // If mtime or size changes, bump lastChangeAt so UI refreshes.
-        for (path, var sw) in sessionWatchesByPath {
+        let snapshot = sessionWatchesByPath
+        for (path, var sw) in snapshot {
             let (mtime, _) = fileMTime(path: path)
             let (size, _) = fileSize(path: path)
 
             let mtimeChanged = mtime != nil && mtime != sw.fileModificationDate
             let sizeChanged = size != nil && size != sw.fileSizeBytes
 
-            if let size, size < sw.readOffset {
-                // File was truncated/rotated; start over.
-                sw.readOffset = 0
-            }
+	            if let size, size < sw.readOffset {
+	                // File was truncated/rotated; start over.
+	                sw.readOffset = 0
+	                sw.pendingLine = ""
+	            }
 
-            if let size, size > sw.readOffset {
-                var newOffset = sw.readOffset
-                if let parsed = parseLatestAssistantMessage(path: path, fromOffset: sw.readOffset, newOffsetOut: &newOffset) {
-                    sw.latestAssistantText = parsed.text
-                    sw.latestAssistantAt = parsed.at
-                }
-                sw.readOffset = newOffset
-            }
+	            if let size, size > sw.readOffset {
+	                var newOffset = sw.readOffset
+	                let messages = parseAssistantMessages(
+	                    path: path,
+	                    fromOffset: sw.readOffset,
+	                    dropFirstPartialLine: sw.readOffset > 0 && sw.pendingLine.isEmpty,
+	                    pendingLine: &sw.pendingLine,
+	                    newOffsetOut: &newOffset
+	                )
+
+	                if !messages.isEmpty {
+	                    for m in messages {
+	                        let isNew: Bool
+	                        if let newAt = m.at, let oldAt = sw.latestAssistantAt {
+	                            isNew = newAt > oldAt
+	                        } else if sw.latestAssistantAt == nil {
+	                            isNew = true
+	                        } else {
+	                            // If we have no timestamp, treat it as new but avoid repeating identical text.
+	                            isNew = sw.latestAssistantText != m.text
+	                        }
+
+	                        if sw.isPrimed, isNew {
+	                            let event = CodexAssistantMessageEvent(
+	                                sessionID: sw.sessionID,
+	                                sessionFileURL: sw.url,
+	                                text: m.text,
+	                                timestamp: m.at
+	                            )
+	                            DispatchQueue.main.async { [weak self] in
+	                                self?.onNewAssistantMessage?(event)
+	                            }
+	                        }
+
+	                        sw.latestAssistantText = m.text
+	                        if let at = m.at {
+	                            sw.latestAssistantAt = at
+	                        }
+	                    }
+	                }
+	                sw.readOffset = newOffset
+	            }
 
             if mtimeChanged || sizeChanged {
                 sw.fileModificationDate = mtime ?? sw.fileModificationDate
@@ -346,25 +395,44 @@ final class MouthEngine {
         }
     }
 
-    private func parseLatestAssistantMessage(
+    private struct AssistantMessage {
+        let text: String
+        let at: Date?
+    }
+
+    private func parseAssistantMessages(
         path: String,
         fromOffset offset: UInt64,
+        dropFirstPartialLine: Bool,
+        pendingLine: inout String,
         newOffsetOut: inout UInt64
-    ) -> (text: String, at: Date?)? {
-        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
+    ) -> [AssistantMessage] {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return [] }
         defer { try? fh.close() }
 
         do {
             try fh.seek(toOffset: offset)
             let data = try fh.readToEnd() ?? Data()
             newOffsetOut = offset + UInt64(data.count)
-            if data.isEmpty { return nil }
+            if data.isEmpty { return [] }
 
-            let chunk = String(decoding: data, as: UTF8.self)
-            let lines = chunk.split(separator: "\n", omittingEmptySubsequences: true)
+            var combined = pendingLine + String(decoding: data, as: UTF8.self)
+            pendingLine = ""
 
-            var bestText: String?
-            var bestAt: Date?
+            if dropFirstPartialLine, let idx = combined.firstIndex(of: "\n") {
+                combined = String(combined[combined.index(after: idx)...])
+            }
+
+            var lines = combined.split(separator: "\n", omittingEmptySubsequences: true)
+            if !combined.hasSuffix("\n"), let last = lines.last {
+                pendingLine = String(last)
+                lines.removeLast()
+            }
+
+            if lines.isEmpty { return [] }
+
+            var out: [AssistantMessage] = []
+            out.reserveCapacity(4)
 
             for lineSub in lines {
                 guard let lineData = String(lineSub).data(using: .utf8) else { continue }
@@ -392,16 +460,12 @@ final class MouthEngine {
                     at = nil
                 }
 
-                bestText = joined
-                bestAt = at
+                out.append(AssistantMessage(text: joined, at: at))
             }
 
-            if let bestText {
-                return (bestText, bestAt)
-            }
-            return nil
+            return out
         } catch {
-            return nil
+            return []
         }
     }
 

@@ -1,0 +1,81 @@
+import Foundation
+
+actor CodexVoiceAnnouncer {
+    struct Item: Hashable, Sendable {
+        let sessionID: String?
+        let sessionFileURL: URL
+        let text: String
+        let timestamp: Date?
+    }
+
+    private let speaker = SaySpeech()
+    private let sound = AfplaySound()
+
+    private var queue: [Item] = []
+    private var runner: Task<Void, Never>?
+
+    private var currentDelimiter: AfplaySound.Playback?
+    private var currentSpeech: SaySpeech.Playback?
+
+    func enqueue(_ event: CodexAssistantMessageEvent) {
+        queue.append(Item(
+            sessionID: event.sessionID,
+            sessionFileURL: event.sessionFileURL,
+            text: event.text,
+            timestamp: event.timestamp
+        ))
+
+        if runner == nil {
+            runner = Task {
+                await run()
+            }
+        }
+    }
+
+    func stopAll() {
+        queue.removeAll()
+        currentDelimiter?.cancel()
+        currentDelimiter = nil
+        currentSpeech?.cancel()
+        currentSpeech = nil
+        runner?.cancel()
+        runner = nil
+    }
+
+    private func run() async {
+        defer { runner = nil }
+
+        while !Task.isCancelled {
+            guard !queue.isEmpty else {
+                return
+            }
+
+            let item = queue.removeFirst()
+
+            // Delimiter sound before each spoken message.
+            if let url = delimiterSoundURL() {
+                do {
+                    let p = try sound.play(fileURL: url)
+                    currentDelimiter = p
+                    try await p.wait()
+                } catch {
+                    // Non-fatal; continue to speech.
+                }
+            }
+            currentDelimiter = nil
+
+            do {
+                let p = try speaker.play(item.text)
+                currentSpeech = p
+                try await p.wait()
+            } catch {
+                // Non-fatal; continue with next queued item.
+            }
+            currentSpeech = nil
+        }
+    }
+
+    private func delimiterSoundURL() -> URL? {
+        Bundle.main.url(forResource: "codex_delimiter", withExtension: "wav")
+    }
+}

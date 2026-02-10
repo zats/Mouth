@@ -5,12 +5,21 @@ final class CodexSessionsViewModel: ObservableObject {
     @Published private(set) var sessions: [CodexActiveSession] = []
 
     private let engine: MouthEngine
+    private let announcer: CodexVoiceAnnouncer
 
-    init(engine: MouthEngine = MouthEngine()) {
+    init(engine: MouthEngine) {
         self.engine = engine
+        self.announcer = CodexVoiceAnnouncer()
 
         engine.onSessionsChanged = { [weak self] sessions in
             self?.sessions = sessions
+        }
+
+        engine.onNewAssistantMessage = { [weak self] event in
+            guard let self else { return }
+            Task {
+                await self.announcer.enqueue(event)
+            }
         }
 
         engine.start()
@@ -18,5 +27,8 @@ final class CodexSessionsViewModel: ObservableObject {
 
     deinit {
         engine.stop()
+        Task {
+            await announcer.stopAll()
+        }
     }
 }

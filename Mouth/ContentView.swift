@@ -90,5 +90,5 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView(model: CodexSessionsViewModel())
+    ContentView(model: CodexSessionsViewModel(engine: MouthEngine()))
 }
