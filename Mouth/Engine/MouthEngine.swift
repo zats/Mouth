@@ -10,6 +10,8 @@ final class MouthEngine {
     private var watchedSessionPathByPid: [pid_t: String] = [:]
     private var knownCodexPids = Set<pid_t>()
     private var lastNoSessionLogAtByPid: [pid_t: Date] = [:]
+    private var lastHeartbeatAt: Date?
+    private var lastEmptyCodexLogAt: Date?
 
     func start() {
         log("start")
@@ -38,10 +40,18 @@ final class MouthEngine {
     }
 
     private func rescan() {
-        let snapshot = ProcessSnapshot.capture()
+        let capture = ProcessSnapshot.captureWithDiagnostics()
+        let snapshot = capture.snapshot
+        let diag = capture.diagnostics
+
+        heartbeat(snapshotCount: snapshot.byPid.count, diagnostics: diag)
 
         let codexProcs = snapshot.byPid.values
             .filter { isCodexLikeProcess($0) }
+
+        if codexProcs.isEmpty {
+            maybeLogNoCodex(diagnostics: diag)
+        }
 
         let currentPids = Set(codexProcs.map(\.pid))
 
@@ -120,6 +130,30 @@ final class MouthEngine {
         }
         lastNoSessionLogAtByPid[pid] = now
         log("codex pid=\(pid) has no open session file under ~/.codex/sessions")
+    }
+
+    private func heartbeat(snapshotCount: Int, diagnostics: ProcessSnapshot.CaptureDiagnostics) {
+        let now = Date()
+        if let last = lastHeartbeatAt, now.timeIntervalSince(last) < 5 {
+            return
+        }
+        lastHeartbeatAt = now
+
+        log("heartbeat snapshotPids=\(snapshotCount) diag=\(diagnostics.summary)")
+
+        // In sandboxed builds, this often shows up as: listallpids ok, but pidInfoOK very low (or 0).
+        if snapshotCount == 0 || diagnostics.pidInfoOK == 0 {
+            log("hint: ENABLE_APP_SANDBOX=YES may block libproc process inspection; expect pidInfoOK=0 and no Codex detections")
+        }
+    }
+
+    private func maybeLogNoCodex(diagnostics: ProcessSnapshot.CaptureDiagnostics) {
+        let now = Date()
+        if let last = lastEmptyCodexLogAt, now.timeIntervalSince(last) < 10 {
+            return
+        }
+        lastEmptyCodexLogAt = now
+        log("no codex processes matched (pidInfoOK=\(diagnostics.pidInfoOK) pidInfoFailed=\(diagnostics.pidInfoFailed) pidPathFailed=\(diagnostics.pidPathFailed))")
     }
 
     private func isCodexLikeProcess(_ p: ProcessSnapshot.ProcessInfo) -> Bool {
