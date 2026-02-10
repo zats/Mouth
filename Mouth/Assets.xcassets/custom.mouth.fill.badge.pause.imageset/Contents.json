@@ -1,8 +1,14 @@
 {
   "images" : [
     {
-      "filename" : "custom.mouth.fill.badge.pause.svg",
-      "idiom" : "universal"
+      "filename" : "custom.mouth.fill.badge.pause.png",
+      "idiom" : "universal",
+      "scale" : "1x"
+    },
+    {
+      "filename" : "custom.mouth.fill.badge.pause@2x.png",
+      "idiom" : "universal",
+      "scale" : "2x"
     }
   ],
   "info" : {
