@@ -9,6 +9,7 @@ final class MouthEngine {
     var onNewAssistantMessage: ((CodexAssistantMessageEvent) -> Void)?
 
     private let iso = ISO8601DateFormatter()
+    private var paused = false
 
     private struct SessionWatch {
         let url: URL
@@ -63,7 +64,25 @@ final class MouthEngine {
         emitSessions()
     }
 
+    func setPaused(_ paused: Bool) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if self.paused == paused { return }
+            self.paused = paused
+
+            if !paused {
+                // On resume, fast-forward session offsets so we don't emit/speak backlog.
+                self.primeAllSessionWatches()
+                self.emitSessions()
+            }
+        }
+    }
+
     private func rescan() {
+        if paused {
+            return
+        }
+
         let snapshot = ProcessSnapshot.capture()
 
         let codexProcs = snapshot.byPid.values
@@ -174,6 +193,7 @@ final class MouthEngine {
         do {
             try watcher.start(queue: queue) { [weak self] event in
                 guard let self else { return }
+                if self.paused { return }
 
                 // We may have multiple PIDs mapped to the same session file.
                 let pids = self.sessionWatchesByPath[path]?.pids.sorted() ?? []
@@ -325,6 +345,10 @@ final class MouthEngine {
     }
 
     private func pollWatchedFiles() {
+        if paused {
+            return
+        }
+
         // If mtime or size changes, bump lastChangeAt so UI refreshes.
         let snapshot = sessionWatchesByPath
         for (path, var sw) in snapshot {
@@ -392,6 +416,40 @@ final class MouthEngine {
                 // Keep the updated readOffset/latestAssistant even if metadata didn't change.
                 sessionWatchesByPath[path] = sw
             }
+        }
+    }
+
+    private func primeAllSessionWatches() {
+        let snapshot = sessionWatchesByPath
+        for (path, var sw) in snapshot {
+            let (size, _) = fileSize(path: path)
+            let maxInitialScanBytes: UInt64 = 256 * 1024
+            let initialOffset: UInt64 = {
+                guard let size else { return 0 }
+                return size > maxInitialScanBytes ? (size - maxInitialScanBytes) : 0
+            }()
+
+            sw.readOffset = initialOffset
+            sw.pendingLine = ""
+            sw.isPrimed = false
+
+            var newOffset = initialOffset
+            let messages = parseAssistantMessages(
+                path: path,
+                fromOffset: initialOffset,
+                dropFirstPartialLine: initialOffset > 0,
+                pendingLine: &sw.pendingLine,
+                newOffsetOut: &newOffset
+            )
+            if let last = messages.last {
+                sw.latestAssistantText = last.text
+                sw.latestAssistantAt = last.at
+            }
+            sw.readOffset = newOffset
+            sw.fileSizeBytes = size ?? sw.fileSizeBytes
+            sw.isPrimed = true
+
+            sessionWatchesByPath[path] = sw
         }
     }
 

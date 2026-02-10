@@ -14,6 +14,10 @@ struct MouthApp: App {
 
         statusItemController = StatusItemController(stopHandler: {
             model.stopSpeakingAndClearQueue()
+        }, togglePauseHandler: {
+            model.togglePaused()
+        }, quitHandler: {
+            NSApp.terminate(nil)
         })
     }
 

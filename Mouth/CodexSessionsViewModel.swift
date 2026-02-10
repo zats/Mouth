@@ -3,6 +3,7 @@ import Combine
 
 final class CodexSessionsViewModel: ObservableObject {
     @Published private(set) var sessions: [CodexActiveSession] = []
+    @Published private(set) var isPaused = false
 
     private let engine: MouthEngine
     private let announcer: CodexVoiceAnnouncer
@@ -10,6 +11,18 @@ final class CodexSessionsViewModel: ObservableObject {
     func stopSpeakingAndClearQueue() {
         Task {
             await announcer.stopAll()
+        }
+    }
+
+    func togglePaused() {
+        setPaused(!isPaused)
+    }
+
+    func setPaused(_ paused: Bool) {
+        isPaused = paused
+        engine.setPaused(paused)
+        Task {
+            await announcer.setPaused(paused)
         }
     }
 

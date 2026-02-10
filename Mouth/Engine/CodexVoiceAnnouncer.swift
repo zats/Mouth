@@ -19,8 +19,13 @@ actor CodexVoiceAnnouncer {
 
     private var didPauseExternalPlayback = false
     private var isSpeaking = false
+    private var paused = false
 
     func enqueue(_ event: CodexAssistantMessageEvent) {
+        if paused {
+            return
+        }
+
         queue.append(Item(
             sessionID: event.sessionID,
             sessionFileURL: event.sessionFileURL,
@@ -46,10 +51,21 @@ actor CodexVoiceAnnouncer {
         setSpeaking(false)
     }
 
+    func setPaused(_ paused: Bool) {
+        self.paused = paused
+        if paused {
+            stopAll()
+        }
+    }
+
     private func run() async {
         defer {
             runner = nil
             setSpeaking(false)
+        }
+
+        if paused {
+            return
         }
 
         setSpeaking(true)
