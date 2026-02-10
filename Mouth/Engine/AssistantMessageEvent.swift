@@ -1,6 +1,7 @@
 import Foundation
 
-struct CodexAssistantMessageEvent: Hashable, Sendable {
+struct AssistantMessageEvent: Hashable, Sendable {
+    let source: MouthSessionSource
     let sessionID: String?
     let sessionFileURL: URL
     let text: String

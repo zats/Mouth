@@ -22,7 +22,7 @@ actor CodexVoiceAnnouncer {
     private var isSpeaking = false
     private var paused = false
 
-    func enqueue(_ event: CodexAssistantMessageEvent) {
+    func enqueue(_ event: AssistantMessageEvent) {
         if paused {
             return
         }
