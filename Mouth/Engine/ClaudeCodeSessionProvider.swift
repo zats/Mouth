@@ -22,20 +22,43 @@ final class ClaudeCodeSessionProvider: MouthSessionProvider {
             return []
         }
 
-        var candidates: [(url: URL, mtime: Date)] = []
+        // There can be thousands of sessions; keep only the N most recently modified as we scan.
+        struct Candidate {
+            let url: URL
+            let mtime: Date
+        }
+
+        var top: [Candidate] = []
+        top.reserveCapacity(maxSessions)
+
+        func insert(_ c: Candidate) {
+            if top.count < maxSessions {
+                top.append(c)
+                return
+            }
+            // Find current minimum and replace if newer.
+            var minIdx = 0
+            for i in 1..<top.count {
+                if top[i].mtime < top[minIdx].mtime {
+                    minIdx = i
+                }
+            }
+            if c.mtime > top[minIdx].mtime {
+                top[minIdx] = c
+            }
+        }
 
         if let e = fm.enumerator(at: baseURL, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) {
             for case let fileURL as URL in e {
                 if fileURL.pathExtension.lowercased() != "jsonl" { continue }
                 let mtime = (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                candidates.append((url: fileURL, mtime: mtime))
+                insert(Candidate(url: fileURL, mtime: mtime))
             }
         }
 
-        if candidates.isEmpty { return [] }
+        if top.isEmpty { return [] }
 
-        candidates.sort { $0.mtime > $1.mtime }
-        let top = candidates.prefix(maxSessions)
+        top.sort { $0.mtime > $1.mtime }
 
         return top.map { item in
             let sessionID = item.url.deletingPathExtension().lastPathComponent
@@ -72,4 +95,3 @@ final class ClaudeCodeSessionProvider: MouthSessionProvider {
         return MouthAssistantMessage(text: joined, at: at)
     }
 }
-

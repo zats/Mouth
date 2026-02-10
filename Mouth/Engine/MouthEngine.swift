@@ -30,6 +30,8 @@ final class MouthEngine {
     }
 
     private var watches: [SessionKey: SessionWatch] = [:]
+    private var lastWatchEventLogAt: [SessionKey: Date] = [:]
+    private var lastDiscoverLogAt: Date?
 
     init(providers: [MouthSessionProvider]? = nil) {
         let logger: (String) -> Void = { msg in
@@ -113,6 +115,16 @@ final class MouthEngine {
             }
         }
 
+        // Light periodic trace to confirm discovery is running.
+        let now = Date()
+        if lastDiscoverLogAt == nil || now.timeIntervalSince(lastDiscoverLogAt!) > 15 {
+            lastDiscoverLogAt = now
+            let counts = Dictionary(grouping: discoveredByKey.values, by: \.source).mapValues(\.count)
+            let codexCount = counts[.codex] ?? 0
+            let claudeCount = counts[.claudeCode] ?? 0
+            log("discover codex=\(codexCount) claude=\(claudeCount) watches=\(watches.count)")
+        }
+
         // Stop watches that are no longer discovered.
         let removedKeys = Set(watches.keys).subtracting(discoveredByKey.keys)
         if !removedKeys.isEmpty {
@@ -156,6 +168,8 @@ final class MouthEngine {
             try watcher.start(queue: queue) { [weak self] event in
                 guard let self else { return }
                 if self.paused { return }
+
+                self.maybeLogWatchEvent(key: key, event: event)
 
                 // Proactively parse on event; some writers don't reliably trigger events.
                 self.pollWatchedFiles()
@@ -208,10 +222,20 @@ final class MouthEngine {
         }
     }
 
+    private func maybeLogWatchEvent(key: SessionKey, event: DispatchSource.FileSystemEvent) {
+        let now = Date()
+        if let last = lastWatchEventLogAt[key], now.timeIntervalSince(last) < 1.0 {
+            return
+        }
+        lastWatchEventLogAt[key] = now
+        log("file event source=\(key.source.rawValue) event=\(event) file=\(key.path)")
+    }
+
     private func invalidateWatch(key: SessionKey, reason: String) {
         guard let sw = watches[key] else { return }
         sw.watcher.stop()
         watches[key] = nil
+        lastWatchEventLogAt[key] = nil
         log("invalidated source=\(key.source.rawValue) file=\(key.path) reason=\(reason)")
     }
 
@@ -248,6 +272,7 @@ final class MouthEngine {
                 )
 
                 if !messages.isEmpty {
+                    log("assistant parsed source=\(key.source.rawValue) count=\(messages.count) file=\(path)")
                     for m in messages {
                         let isNew: Bool
                         if let newAt = m.at, let oldAt = sw.latestAssistantAt {
