@@ -14,6 +14,7 @@ final class MouthEngine {
         var pids: Set<pid_t>
         var lastChangeAt: Date?
         var fileModificationDate: Date?
+        var fileSizeBytes: UInt64?
     }
 
     // PID -> session file path
@@ -109,6 +110,9 @@ final class MouthEngine {
             }
         }
 
+        // Poll watched files for changes. Some writers don't reliably trigger kqueue file events.
+        pollWatchedFiles()
+
         emitSessions()
     }
 
@@ -153,6 +157,10 @@ final class MouthEngine {
         if let err {
             log("failed to stat session file: \(path) error=\(err)")
         }
+        let (size, sizeErr) = fileSize(path: path)
+        if let sizeErr {
+            log("failed to size session file: \(path) error=\(sizeErr)")
+        }
 
         let watcher = FileChangeWatcher(url: sessionURL)
         do {
@@ -167,6 +175,8 @@ final class MouthEngine {
                     sw.lastChangeAt = Date()
                     let (mtime, _) = self.fileMTime(path: path)
                     sw.fileModificationDate = mtime
+                    let (size, _) = self.fileSize(path: path)
+                    sw.fileSizeBytes = size
                     self.sessionWatchesByPath[path] = sw
                 }
 
@@ -184,7 +194,8 @@ final class MouthEngine {
                 watcher: watcher,
                 pids: [pid],
                 lastChangeAt: nil,
-                fileModificationDate: mtime
+                fileModificationDate: mtime,
+                fileSizeBytes: size
             )
             sessionWatchesByPath[path] = sw
         } catch {
@@ -257,12 +268,13 @@ final class MouthEngine {
                     fileURL: sw.url,
                     pids: sw.pids.sorted(),
                     lastChangeAt: sw.lastChangeAt,
-                    fileModificationDate: sw.fileModificationDate
+                    fileModificationDate: sw.fileModificationDate,
+                    fileSizeBytes: sw.fileSizeBytes
                 )
             }
             .sorted { lhs, rhs in
-                let l = lhs.fileModificationDate ?? .distantPast
-                let r = rhs.fileModificationDate ?? .distantPast
+                let l = lhs.lastChangeAt ?? lhs.fileModificationDate ?? .distantPast
+                let r = rhs.lastChangeAt ?? rhs.fileModificationDate ?? .distantPast
                 if l != r { return l > r }
                 return lhs.fileURL.path < rhs.fileURL.path
             }
@@ -272,10 +284,37 @@ final class MouthEngine {
         }
     }
 
+    private func pollWatchedFiles() {
+        // If mtime or size changes, bump lastChangeAt so UI refreshes.
+        for (path, var sw) in sessionWatchesByPath {
+            let (mtime, _) = fileMTime(path: path)
+            let (size, _) = fileSize(path: path)
+
+            let mtimeChanged = mtime != nil && mtime != sw.fileModificationDate
+            let sizeChanged = size != nil && size != sw.fileSizeBytes
+
+            if mtimeChanged || sizeChanged {
+                sw.fileModificationDate = mtime ?? sw.fileModificationDate
+                sw.fileSizeBytes = size ?? sw.fileSizeBytes
+                sw.lastChangeAt = Date()
+                sessionWatchesByPath[path] = sw
+            }
+        }
+    }
+
     private func fileMTime(path: String) -> (Date?, String?) {
         do {
             let attrs = try FileManager.default.attributesOfItem(atPath: path)
             return (attrs[.modificationDate] as? Date, nil)
+        } catch {
+            return (nil, String(describing: error))
+        }
+    }
+
+    private func fileSize(path: String) -> (UInt64?, String?) {
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: path)
+            return (attrs[.size] as? UInt64, nil)
         } catch {
             return (nil, String(describing: error))
         }

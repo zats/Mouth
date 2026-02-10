@@ -9,4 +9,5 @@ struct CodexActiveSession: Identifiable, Hashable {
     let pids: [pid_t]
     let lastChangeAt: Date?
     let fileModificationDate: Date?
+    let fileSizeBytes: UInt64?
 }
