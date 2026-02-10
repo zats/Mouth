@@ -1,6 +1,8 @@
 import Foundation
 
 actor CodexVoiceAnnouncer {
+    static let pauseExternalPlaybackDefaultsKey = "mouth.pause_external_playback_while_speaking"
+
     struct Item: Hashable, Sendable {
         let sessionID: String?
         let sessionFileURL: URL
@@ -21,6 +23,14 @@ actor CodexVoiceAnnouncer {
     private var didPauseExternalPlayback = false
     private var isSpeaking = false
     private var paused = false
+
+    private func shouldPauseExternalPlaybackWhileSpeaking() -> Bool {
+        let ud = UserDefaults.standard
+        if ud.object(forKey: Self.pauseExternalPlaybackDefaultsKey) == nil {
+            return true // default enabled
+        }
+        return ud.bool(forKey: Self.pauseExternalPlaybackDefaultsKey)
+    }
 
     func enqueue(_ event: AssistantMessageEvent) {
         if paused {
@@ -51,8 +61,11 @@ actor CodexVoiceAnnouncer {
         runner = nil
 
         if didPauseExternalPlayback {
-            // If we paused someone else's playback at the start of this batch, resume it on stop.
-            MediaKeyController.togglePlayPause()
+            // If we paused someone else's playback at the start of this batch, resume it on stop
+            // only when the setting is enabled.
+            if shouldPauseExternalPlaybackWhileSpeaking() {
+                MediaKeyController.togglePlayPause()
+            }
             didPauseExternalPlayback = false
         }
 
@@ -81,7 +94,10 @@ actor CodexVoiceAnnouncer {
         setSpeaking(true)
 
         // Pause external playback once for the whole batch (best-effort).
-        if !didPauseExternalPlayback, SystemAudioActivity.isAnyOtherProcessRunningOutput() {
+        if shouldPauseExternalPlaybackWhileSpeaking(),
+           !didPauseExternalPlayback,
+           SystemAudioActivity.isAnyOtherProcessRunningOutput()
+        {
             MediaKeyController.togglePlayPause()
             didPauseExternalPlayback = true
 
@@ -92,7 +108,9 @@ actor CodexVoiceAnnouncer {
         while !Task.isCancelled {
             guard !queue.isEmpty else {
                 if didPauseExternalPlayback {
-                    MediaKeyController.togglePlayPause()
+                    if shouldPauseExternalPlaybackWhileSpeaking() {
+                        MediaKeyController.togglePlayPause()
+                    }
                     didPauseExternalPlayback = false
                 }
                 return

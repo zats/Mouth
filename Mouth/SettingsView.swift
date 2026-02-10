@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var model: CodexSessionsViewModel
     @AppStorage(SaySpeech.providerDefaultsKey) private var speechProviderRaw: String = SaySpeech.Provider.macOSSay.rawValue
+    @AppStorage(CodexVoiceAnnouncer.pauseExternalPlaybackDefaultsKey) private var pauseExternalPlaybackWhileSpeaking: Bool = true
 
     @State private var sagAPIKeyDraft: String = ""
     @State private var sagHasAPIKey: Bool = false
@@ -32,6 +33,9 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Toggle("Mouth enabled", isOn: enabledBinding)
+                .padding(.bottom, 12)
+
+            Toggle("Pause music while speaking", isOn: $pauseExternalPlaybackWhileSpeaking)
                 .padding(.bottom, 12)
 
             HStack {
