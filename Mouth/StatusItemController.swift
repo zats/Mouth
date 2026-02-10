@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import Foundation
 
-final class StatusItemController: NSObject, NSMenuDelegate {
+final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
     private let model: CodexSessionsViewModel
     private let stopHandler: () -> Void
@@ -19,9 +19,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private var currentSpeakingSessionID: String?
     private var isPaused = false
     private var isSpeaking = false
-    private var iconOverrideSymbolName: String?
-
-    private var menuFlagsMonitor: Any?
 
     init(
         model: CodexSessionsViewModel,
@@ -39,16 +36,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         super.init()
 
         if let button = statusItem.button {
-            // NSStatusBarButton may swallow command-click (Cmd-drag is used to rearrange items).
-            // Gesture recognizers are more reliable for modified clicks (Cmd, Ctrl, etc).
-            // Keep AppKit's native right-click dispatch; gesture recognizers can be flaky here.
             button.target = self
-            button.action = #selector(didRightMouseUpFromButton)
-            button.sendAction(on: [.rightMouseUp])
-
-            let leftClick = NSClickGestureRecognizer(target: self, action: #selector(didLeftClick(_:)))
-            leftClick.buttonMask = 0x1
-            button.addGestureRecognizer(leftClick)
+            button.action = #selector(didClick)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
             button.imagePosition = .imageOnly
             button.toolTip = "Mouth"
@@ -80,7 +70,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             self.isSpeaking = speaking
             if !speaking {
                 self.currentSpeakingSessionID = nil
-                self.iconOverrideSymbolName = nil
             }
             self.updateOpenThreadMenuItem()
             self.updateIcon()
@@ -104,36 +93,26 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if let currentItemObserver {
             NotificationCenter.default.removeObserver(currentItemObserver)
         }
-        if let menuFlagsMonitor {
-            NSEvent.removeMonitor(menuFlagsMonitor)
-        }
     }
 
-    @objc private func didLeftClick(_ recognizer: NSGestureRecognizer) {
-        guard recognizer.state == .ended else { return }
-
-        let flags = NSApp.currentEvent?.modifierFlags ?? []
-
-        // Treat control-click as right-click (common macOS convention).
-        if flags.contains(.control) {
-            if let menu {
-                statusItem.popUpMenu(menu)
-            }
+    @objc private func didClick() {
+        guard let event = NSApp.currentEvent else {
+            handleLeftClick()
             return
         }
 
-        handleLeftClick(commandHeld: flags.contains(.command))
-    }
-
-    @objc private func didRightMouseUpFromButton() {
-        if let menu {
-            statusItem.popUpMenu(menu)
+        switch event.type {
+        case .rightMouseUp, .rightMouseDown:
+            if let menu {
+                statusItem.popUpMenu(menu)
+            }
+        default:
+            handleLeftClick()
         }
     }
 
     private func buildMenu() {
         let menu = NSMenu()
-        menu.delegate = self
 
         let openThread = NSMenuItem(title: "Open Thread in Codex", action: #selector(didOpenThread), keyEquivalent: "")
         openThread.target = self
@@ -160,18 +139,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         updateOpenThreadMenuItem()
     }
 
-    private func handleLeftClick(commandHeld: Bool) {
+    private func handleLeftClick() {
         if isSpeaking {
-            if commandHeld, openCurrentThreadInCodex() {
-                return
-            }
-
             // Click while speaking: stop playback + clear queue.
             // Also update local state immediately so the next click toggles pause.
             stopHandler()
             isSpeaking = false
             currentSpeakingSessionID = nil
-            iconOverrideSymbolName = nil
             updateOpenThreadMenuItem()
             updateIcon()
         } else {
@@ -231,9 +205,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private func updateIcon() {
         let img: NSImage?
 
-        if isSpeaking, let override = iconOverrideSymbolName {
-            img = NSImage(systemSymbolName: override, accessibilityDescription: nil)
-        } else if isPaused {
+        if isPaused {
             // When disabled altogether: show mouth (not filled).
             img = NSImage(systemSymbolName: "mouth", accessibilityDescription: nil)
         } else if isSpeaking {
@@ -247,51 +219,5 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         img?.isTemplate = true
         statusItem.button?.image = img
         statusItem.button?.toolTip = isPaused ? "Mouth (Paused)" : (isSpeaking ? "Mouth (Speaking)" : "Mouth")
-    }
-
-    // MARK: - NSMenuDelegate
-
-    func menuWillOpen(_ menu: NSMenu) {
-        if menuFlagsMonitor == nil {
-            menuFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
-                guard let self else { return event }
-                self.updateHoverIcon()
-                return event
-            }
-        }
-        updateHoverIcon()
-    }
-
-    func menuDidClose(_ menu: NSMenu) {
-        if let menuFlagsMonitor {
-            NSEvent.removeMonitor(menuFlagsMonitor)
-            self.menuFlagsMonitor = nil
-        }
-        iconOverrideSymbolName = nil
-        updateIcon()
-    }
-
-    func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {
-        updateHoverIcon()
-    }
-
-    private func updateHoverIcon() {
-        guard isSpeaking else {
-            if iconOverrideSymbolName != nil {
-                iconOverrideSymbolName = nil
-                updateIcon()
-            }
-            return
-        }
-
-        let highlighted = menu?.highlightedItem
-        let commandHeld = NSEvent.modifierFlags.contains(.command)
-        let shouldOverride = (highlighted === openThreadItem) && commandHeld
-
-        let newOverride = shouldOverride ? "magnifyingglass" : nil
-        if iconOverrideSymbolName != newOverride {
-            iconOverrideSymbolName = newOverride
-            updateIcon()
-        }
     }
 }
