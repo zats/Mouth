@@ -9,6 +9,8 @@ struct MouthApp: App {
     private let settingsWindowController: SettingsWindowController
 
     init() {
+        LaunchAtLoginManager.applySavedSetting()
+
         let engine = MouthEngine()
         let model = CodexSessionsViewModel(engine: engine)
         _sessionsModel = StateObject(wrappedValue: model)

@@ -4,6 +4,7 @@ struct SettingsView: View {
     @ObservedObject var model: CodexSessionsViewModel
     @AppStorage(SaySpeech.providerDefaultsKey) private var speechProviderRaw: String = SaySpeech.Provider.macOSSay.rawValue
     @AppStorage(CodexVoiceAnnouncer.pauseExternalPlaybackDefaultsKey) private var pauseExternalPlaybackWhileSpeaking: Bool = true
+    @AppStorage(LaunchAtLoginManager.defaultsKey) private var launchAtLogin: Bool = false
 
     @State private var sagAPIKeyDraft: String = ""
     @State private var sagHasAPIKey: Bool = false
@@ -36,6 +37,9 @@ struct SettingsView: View {
                 .padding(.bottom, 12)
 
             Toggle("Pause music while speaking", isOn: $pauseExternalPlaybackWhileSpeaking)
+                .padding(.bottom, 12)
+
+            Toggle("Start at login", isOn: $launchAtLogin)
                 .padding(.bottom, 12)
 
             HStack {
@@ -91,6 +95,9 @@ struct SettingsView: View {
         .onChange(of: sagAPIKeyDraft) { _, _ in
             persistSAGAPIKeySoon()
         }
+        .onChange(of: launchAtLogin) { _, enabled in
+            LaunchAtLoginManager.setEnabled(enabled)
+        }
     }
 
     private func loadState() {
@@ -98,6 +105,10 @@ struct SettingsView: View {
         if !sagInstalled, selectedProvider == .sag {
             speechProviderRaw = SaySpeech.Provider.macOSSay.rawValue
         }
+
+        // Apply launch-at-login in case the user opened Settings before app startup finished,
+        // or if a previous register/unregister failed transiently.
+        LaunchAtLoginManager.setEnabled(launchAtLogin)
 
         didLoadKey = false
         sagKeyError = nil
