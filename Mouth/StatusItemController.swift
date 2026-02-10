@@ -42,11 +42,8 @@ final class StatusItemController: NSObject {
     }
 
     private func updateIcon(isSpeaking: Bool) {
-        let symbolName = isSpeaking ? "stop.fill" : "mouth"
-        let fallback = isSpeaking ? "stop.fill" : "waveform"
-
+        let symbolName = isSpeaking ? "stop.fill" : "mouth.fill"
         let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
-            ?? NSImage(systemSymbolName: fallback, accessibilityDescription: nil)
         img?.isTemplate = true
         statusItem.button?.image = img
         statusItem.button?.toolTip = isSpeaking ? "Stop speaking" : "Mouth"
