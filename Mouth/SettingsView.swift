@@ -32,43 +32,51 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Toggle("Mouth enabled", isOn: enabledBinding)
+                .padding(.bottom, 12)
 
-            if sagInstalled {
+            HStack {
                 Picker("Voice engine", selection: $speechProviderRaw) {
                     Text(SaySpeech.Provider.macOSSay.displayName).tag(SaySpeech.Provider.macOSSay.rawValue)
-                    Text(SaySpeech.Provider.sag.displayName).tag(SaySpeech.Provider.sag.rawValue)
+                    Text(SaySpeech.Provider.sag.displayName)
+                        .tag(SaySpeech.Provider.sag.rawValue)
+                        .disabled(!sagInstalled)
                 }
 
-                if selectedProvider == .sag {
-                    ZStack(alignment: .trailing) {
-                        SecureField("ElevenLabs API key", text: $sagAPIKeyDraft)
+                Button {
+                    testVoice()
+                } label: {
+                    Image(systemName: "play.fill")
+                }
+                .help("Test voice")
+                .disabled(testPlayback != nil)
+            }
+            .padding(.bottom, 12)
 
-                        if sagHasAPIKey {
-                            Button {
-                                sagAPIKeyDraft = ""
-                                persistSAGAPIKeySoon()
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Clear API key")
-                            .padding(.trailing, 6)
+            if sagInstalled, selectedProvider == .sag {
+                ZStack(alignment: .trailing) {
+                    SecureField("ElevenLabs API key", text: $sagAPIKeyDraft)
+
+                    if sagHasAPIKey {
+                        Button {
+                            sagAPIKeyDraft = ""
+                            persistSAGAPIKeySoon()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
                         }
+                        .buttonStyle(.plain)
+                        .help("Clear API key")
+                        .padding(.trailing, 6)
                     }
+                }
 
-                    if let sagKeyError {
-                        Text(sagKeyError)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
+                if let sagKeyError {
+                    Text(sagKeyError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
                 }
             }
 
-            Button("Test voice") {
-                testVoice()
-            }
-            .disabled(testPlayback != nil)
         }
         .padding(20)
         .onAppear { loadState() }
