@@ -41,16 +41,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if let button = statusItem.button {
             // NSStatusBarButton may swallow command-click (Cmd-drag is used to rearrange items).
             // Gesture recognizers are more reliable for modified clicks (Cmd, Ctrl, etc).
-            button.target = nil
-            button.action = nil
+            // Keep AppKit's native right-click dispatch; gesture recognizers can be flaky here.
+            button.target = self
+            button.action = #selector(didRightMouseUpFromButton)
+            button.sendAction(on: [.rightMouseUp])
 
             let leftClick = NSClickGestureRecognizer(target: self, action: #selector(didLeftClick(_:)))
             leftClick.buttonMask = 0x1
             button.addGestureRecognizer(leftClick)
-
-            let rightClick = NSClickGestureRecognizer(target: self, action: #selector(didRightClick(_:)))
-            rightClick.buttonMask = 0x2
-            button.addGestureRecognizer(rightClick)
 
             button.imagePosition = .imageOnly
             button.toolTip = "Mouth"
@@ -127,8 +125,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         handleLeftClick(commandHeld: flags.contains(.command))
     }
 
-    @objc private func didRightClick(_ recognizer: NSGestureRecognizer) {
-        guard recognizer.state == .ended else { return }
+    @objc private func didRightMouseUpFromButton() {
         if let menu {
             statusItem.popUpMenu(menu)
         }
