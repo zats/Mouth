@@ -7,7 +7,12 @@ final class MouthEngine {
 
     var onNewAssistantMessage: ((AssistantMessageEvent) -> Void)?
 
-    private let iso = ISO8601DateFormatter()
+    private let iso: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        // Claude Code uses fractional seconds; Codex may as well.
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
     private var paused = false
 
     private let providersBySource: [MouthSessionSource: MouthSessionProvider]
@@ -266,7 +271,9 @@ final class MouthEngine {
                     source: key.source,
                     path: path,
                     fromOffset: sw.readOffset,
-                    dropFirstPartialLine: sw.readOffset > 0 && sw.pendingLine.isEmpty,
+                    // sw.readOffset is always a known file offset from our previous read, so it's already
+                    // aligned to our stream; dropping would skip the first new line in append-only writers.
+                    dropFirstPartialLine: false,
                     pendingLine: &sw.pendingLine,
                     newOffsetOut: &newOffset
                 )
