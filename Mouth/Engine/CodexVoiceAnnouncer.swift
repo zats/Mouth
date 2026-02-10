@@ -49,6 +49,13 @@ actor CodexVoiceAnnouncer {
         currentSpeech = nil
         runner?.cancel()
         runner = nil
+
+        if didPauseExternalPlayback {
+            // If we paused someone else's playback at the start of this batch, resume it on stop.
+            MediaKeyController.togglePlayPause()
+            didPauseExternalPlayback = false
+        }
+
         setCurrentItem(nil)
         setSpeaking(false)
     }
