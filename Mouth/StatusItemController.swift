@@ -54,7 +54,7 @@ final class StatusItemController: NSObject {
 
     @objc private func didClick() {
         guard let event = NSApp.currentEvent else {
-            stopHandler()
+            handleLeftClick()
             return
         }
 
@@ -64,7 +64,7 @@ final class StatusItemController: NSObject {
                 statusItem.popUpMenu(menu)
             }
         default:
-            stopHandler()
+            handleLeftClick()
         }
     }
 
@@ -90,11 +90,20 @@ final class StatusItemController: NSObject {
         updatePauseMenuItem()
     }
 
+    private func handleLeftClick() {
+        if isSpeaking {
+            // First click while speaking: stop playback + clear queue.
+            // Also update local state immediately so the next click toggles pause.
+            stopHandler()
+            isSpeaking = false
+            updateIcon()
+        } else {
+            togglePause()
+        }
+    }
+
     @objc private func didTogglePause() {
-        isPaused.toggle()
-        updatePauseMenuItem()
-        updateIcon()
-        togglePauseHandler()
+        togglePause()
     }
 
     @objc private func didOpenSettings() {
@@ -107,6 +116,13 @@ final class StatusItemController: NSObject {
 
     private func updatePauseMenuItem() {
         pauseItem?.title = isPaused ? "Resume" : "Pause"
+    }
+
+    private func togglePause() {
+        isPaused.toggle()
+        updatePauseMenuItem()
+        updateIcon()
+        togglePauseHandler()
     }
 
     private func updateIcon(isSpeaking: Bool) {
