@@ -7,6 +7,8 @@ final class MouthEngine {
 
     var onSessionsChanged: (([CodexActiveSession]) -> Void)?
 
+    private let iso = ISO8601DateFormatter()
+
     private struct SessionWatch {
         let url: URL
         let sessionID: String?
@@ -15,6 +17,9 @@ final class MouthEngine {
         var lastChangeAt: Date?
         var fileModificationDate: Date?
         var fileSizeBytes: UInt64?
+        var readOffset: UInt64
+        var latestAssistantText: String?
+        var latestAssistantAt: Date?
     }
 
     // PID -> session file path
@@ -180,6 +185,8 @@ final class MouthEngine {
                     self.sessionWatchesByPath[path] = sw
                 }
 
+                // Proactively parse on event; some writers don't reliably trigger events.
+                self.pollWatchedFiles()
                 self.emitSessions()
 
                 // If the file was rotated/renamed/deleted, attempt a quick re-resolve on next tick.
@@ -188,15 +195,33 @@ final class MouthEngine {
                 }
             }
 
-            let sw = SessionWatch(
+            let maxInitialScanBytes: UInt64 = 256 * 1024
+            let initialOffset: UInt64 = {
+                guard let size else { return 0 }
+                return size > maxInitialScanBytes ? (size - maxInitialScanBytes) : 0
+            }()
+
+            var sw = SessionWatch(
                 url: sessionURL,
                 sessionID: sessionID,
                 watcher: watcher,
                 pids: [pid],
                 lastChangeAt: nil,
                 fileModificationDate: mtime,
-                fileSizeBytes: size
+                fileSizeBytes: size,
+                readOffset: initialOffset,
+                latestAssistantText: nil,
+                latestAssistantAt: nil
             )
+
+            // Initialize latest assistant message by scanning the tail chunk.
+            var newOffset = initialOffset
+            if let parsed = parseLatestAssistantMessage(path: path, fromOffset: initialOffset, newOffsetOut: &newOffset) {
+                sw.latestAssistantText = parsed.text
+                sw.latestAssistantAt = parsed.at
+            }
+            sw.readOffset = newOffset
+
             sessionWatchesByPath[path] = sw
         } catch {
             log("failed to watch session file: \(path) error=\(error)")
@@ -269,7 +294,9 @@ final class MouthEngine {
                     pids: sw.pids.sorted(),
                     lastChangeAt: sw.lastChangeAt,
                     fileModificationDate: sw.fileModificationDate,
-                    fileSizeBytes: sw.fileSizeBytes
+                    fileSizeBytes: sw.fileSizeBytes,
+                    latestAssistantText: sw.latestAssistantText,
+                    latestAssistantAt: sw.latestAssistantAt
                 )
             }
             .sorted { lhs, rhs in
@@ -293,12 +320,88 @@ final class MouthEngine {
             let mtimeChanged = mtime != nil && mtime != sw.fileModificationDate
             let sizeChanged = size != nil && size != sw.fileSizeBytes
 
+            if let size, size < sw.readOffset {
+                // File was truncated/rotated; start over.
+                sw.readOffset = 0
+            }
+
+            if let size, size > sw.readOffset {
+                var newOffset = sw.readOffset
+                if let parsed = parseLatestAssistantMessage(path: path, fromOffset: sw.readOffset, newOffsetOut: &newOffset) {
+                    sw.latestAssistantText = parsed.text
+                    sw.latestAssistantAt = parsed.at
+                }
+                sw.readOffset = newOffset
+            }
+
             if mtimeChanged || sizeChanged {
                 sw.fileModificationDate = mtime ?? sw.fileModificationDate
                 sw.fileSizeBytes = size ?? sw.fileSizeBytes
                 sw.lastChangeAt = Date()
                 sessionWatchesByPath[path] = sw
+            } else {
+                // Keep the updated readOffset/latestAssistant even if metadata didn't change.
+                sessionWatchesByPath[path] = sw
             }
+        }
+    }
+
+    private func parseLatestAssistantMessage(
+        path: String,
+        fromOffset offset: UInt64,
+        newOffsetOut: inout UInt64
+    ) -> (text: String, at: Date?)? {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? fh.close() }
+
+        do {
+            try fh.seek(toOffset: offset)
+            let data = try fh.readToEnd() ?? Data()
+            newOffsetOut = offset + UInt64(data.count)
+            if data.isEmpty { return nil }
+
+            let chunk = String(decoding: data, as: UTF8.self)
+            let lines = chunk.split(separator: "\n", omittingEmptySubsequences: true)
+
+            var bestText: String?
+            var bestAt: Date?
+
+            for lineSub in lines {
+                guard let lineData = String(lineSub).data(using: .utf8) else { continue }
+                guard let obj = try? JSONSerialization.jsonObject(with: lineData),
+                      let dict = obj as? [String: Any]
+                else { continue }
+
+                guard (dict["type"] as? String) == "response_item" else { continue }
+                guard let payload = dict["payload"] as? [String: Any] else { continue }
+                guard (payload["type"] as? String) == "message" else { continue }
+                guard (payload["role"] as? String) == "assistant" else { continue }
+
+                guard let content = payload["content"] as? [[String: Any]] else { continue }
+                let texts = content.compactMap { item -> String? in
+                    guard (item["type"] as? String) == "output_text" else { return nil }
+                    return item["text"] as? String
+                }
+                let joined = texts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                if joined.isEmpty { continue }
+
+                let at: Date?
+                if let ts = dict["timestamp"] as? String {
+                    at = iso.date(from: ts)
+                } else {
+                    at = nil
+                }
+
+                bestText = joined
+                bestAt = at
+            }
+
+            if let bestText {
+                return (bestText, bestAt)
+            }
+            return nil
+        } catch {
+            return nil
         }
     }
 

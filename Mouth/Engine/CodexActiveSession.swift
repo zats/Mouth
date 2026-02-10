@@ -10,4 +10,6 @@ struct CodexActiveSession: Identifiable, Hashable {
     let lastChangeAt: Date?
     let fileModificationDate: Date?
     let fileSizeBytes: UInt64?
+    let latestAssistantText: String?
+    let latestAssistantAt: Date?
 }

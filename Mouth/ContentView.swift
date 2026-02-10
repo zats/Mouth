@@ -1,5 +1,6 @@
 //
 
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -30,9 +31,32 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        Text(s.fileURL.path)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            Text(s.fileURL.path)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+
+                            Button {
+                                NSWorkspace.shared.activateFileViewerSelecting([s.fileURL])
+                            } label: {
+                                Image(systemName: "folder")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Reveal in Finder")
+                        }
+
+                        if let text = s.latestAssistantText, !text.isEmpty {
+                            Text(text)
+                                .font(.callout)
+                                .lineLimit(3)
+                                .textSelection(.enabled)
+                        } else {
+                            Text("(no assistant message found yet)")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
 
                         HStack(spacing: 12) {
                             if let d = s.fileModificationDate {
@@ -47,6 +71,11 @@ struct ContentView: View {
                             }
                             if let n = s.fileSizeBytes {
                                 Text("size: \(n)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let d = s.latestAssistantAt {
+                                Text("ai: \(d.formatted(date: .abbreviated, time: .standard))")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
