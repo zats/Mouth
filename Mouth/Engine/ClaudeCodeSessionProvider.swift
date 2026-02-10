@@ -5,13 +5,24 @@ final class ClaudeCodeSessionProvider: MouthSessionProvider {
 
     private let logger: (String) -> Void
     private let maxSessions: Int
+    private let scanInterval: TimeInterval
 
-    init(logger: @escaping (String) -> Void, maxSessions: Int = 24) {
+    private var lastScanAt: Date?
+    private var cached: [MouthDiscoveredSession] = []
+
+    init(logger: @escaping (String) -> Void, maxSessions: Int = 24, scanInterval: TimeInterval = 5) {
         self.logger = logger
         self.maxSessions = maxSessions
+        self.scanInterval = scanInterval
     }
 
     func discoverSessions() -> [MouthDiscoveredSession] {
+        let now = Date()
+        if let lastScanAt, now.timeIntervalSince(lastScanAt) < scanInterval {
+            return cached
+        }
+        lastScanAt = now
+
         let fm = FileManager.default
         let baseURL = fm.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude")
@@ -60,7 +71,7 @@ final class ClaudeCodeSessionProvider: MouthSessionProvider {
 
         top.sort { $0.mtime > $1.mtime }
 
-        return top.map { item in
+        let sessions = top.map { item in
             let sessionID = item.url.deletingPathExtension().lastPathComponent
             return MouthDiscoveredSession(
                 source: .claudeCode,
@@ -69,6 +80,10 @@ final class ClaudeCodeSessionProvider: MouthSessionProvider {
                 owners: ["filesystem"]
             )
         }
+
+        cached = sessions
+        logger("claude discover sessions=\(sessions.count)")
+        return sessions
     }
 
     func parseAssistantMessage(dict: [String: Any], iso: ISO8601DateFormatter) -> MouthAssistantMessage? {
