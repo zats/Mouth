@@ -5,10 +5,15 @@ final class MouthEngine {
 
     private var timer: DispatchSourceTimer?
 
+    var onSessionsChanged: (([CodexActiveSession]) -> Void)?
+
     private struct SessionWatch {
         let url: URL
+        let sessionID: String?
         let watcher: FileChangeWatcher
         var pids: Set<pid_t>
+        var lastChangeAt: Date?
+        var fileModificationDate: Date?
     }
 
     // PID -> session file path
@@ -45,6 +50,8 @@ final class MouthEngine {
         sessionWatchesByPath.removeAll()
         knownCodexPids.removeAll()
         lastNoSessionLogAtByPid.removeAll()
+
+        emitSessions()
     }
 
     private func rescan() {
@@ -101,6 +108,8 @@ final class MouthEngine {
                 handlePidExit(pid: pid)
             }
         }
+
+        emitSessions()
     }
 
     private func updatePid(_ pid: pid_t, sessionURL: URL?) {
@@ -127,6 +136,7 @@ final class MouthEngine {
         log("codex session pid=\(pid) file=\(newPath)")
 
         addPid(pid, toSessionURL: sessionURL)
+        emitSessions()
     }
 
     private func addPid(_ pid: pid_t, toSessionURL sessionURL: URL) {
@@ -138,6 +148,12 @@ final class MouthEngine {
             return
         }
 
+        let sessionID = ProcOpenFiles.extractSessionID(fromSessionFileURL: sessionURL)
+        let (mtime, err) = fileMTime(path: path)
+        if let err {
+            log("failed to stat session file: \(path) error=\(err)")
+        }
+
         let watcher = FileChangeWatcher(url: sessionURL)
         do {
             try watcher.start(queue: queue) { [weak self] event in
@@ -147,13 +163,29 @@ final class MouthEngine {
                 let pids = self.sessionWatchesByPath[path]?.pids.sorted() ?? []
                 self.log("session changed pids=\(pids) event=\(event) file=\(path)")
 
+                if var sw = self.sessionWatchesByPath[path] {
+                    sw.lastChangeAt = Date()
+                    let (mtime, _) = self.fileMTime(path: path)
+                    sw.fileModificationDate = mtime
+                    self.sessionWatchesByPath[path] = sw
+                }
+
+                self.emitSessions()
+
                 // If the file was rotated/renamed/deleted, attempt a quick re-resolve on next tick.
                 if event.contains(.delete) || event.contains(.rename) || event.contains(.revoke) {
                     self.invalidateSessionPath(path, reason: "session file rotated")
                 }
             }
 
-            let sw = SessionWatch(url: sessionURL, watcher: watcher, pids: [pid])
+            let sw = SessionWatch(
+                url: sessionURL,
+                sessionID: sessionID,
+                watcher: watcher,
+                pids: [pid],
+                lastChangeAt: nil,
+                fileModificationDate: mtime
+            )
             sessionWatchesByPath[path] = sw
         } catch {
             log("failed to watch session file: \(path) error=\(error)")
@@ -176,6 +208,8 @@ final class MouthEngine {
         } else {
             sessionWatchesByPath[path] = sw
         }
+
+        emitSessions()
     }
 
     private func invalidateSessionPath(_ path: String, reason: String) {
@@ -189,6 +223,8 @@ final class MouthEngine {
         sw.watcher.stop()
         sessionWatchesByPath[path] = nil
         log("invalidated session file=\(path) reason=\(reason)")
+
+        emitSessions()
     }
 
     private func handlePidExit(pid: pid_t) {
@@ -197,6 +233,8 @@ final class MouthEngine {
         } else {
             pidToSessionPath[pid] = nil
         }
+
+        emitSessions()
     }
 
     private func maybeLogNoSession(pid: pid_t) {
@@ -206,6 +244,41 @@ final class MouthEngine {
         }
         lastNoSessionLogAtByPid[pid] = now
         log("codex pid=\(pid) has no open session file under ~/.codex/sessions")
+    }
+
+    private func emitSessions() {
+        guard let onSessionsChanged else { return }
+
+        let sessions: [CodexActiveSession] = sessionWatchesByPath
+            .values
+            .map { sw in
+                CodexActiveSession(
+                    sessionID: sw.sessionID,
+                    fileURL: sw.url,
+                    pids: sw.pids.sorted(),
+                    lastChangeAt: sw.lastChangeAt,
+                    fileModificationDate: sw.fileModificationDate
+                )
+            }
+            .sorted { lhs, rhs in
+                let l = lhs.fileModificationDate ?? .distantPast
+                let r = rhs.fileModificationDate ?? .distantPast
+                if l != r { return l > r }
+                return lhs.fileURL.path < rhs.fileURL.path
+            }
+
+        DispatchQueue.main.async {
+            onSessionsChanged(sessions)
+        }
+    }
+
+    private func fileMTime(path: String) -> (Date?, String?) {
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: path)
+            return (attrs[.modificationDate] as? Date, nil)
+        } catch {
+            return (nil, String(describing: error))
+        }
     }
 
     private func isCodexLikeProcess(_ p: ProcessSnapshot.ProcessInfo) -> Bool {
