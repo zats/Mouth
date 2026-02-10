@@ -1,26 +1,34 @@
 import AppKit
+import Combine
 import Foundation
 
 final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
+    private let model: CodexSessionsViewModel
     private let stopHandler: () -> Void
     private let togglePauseHandler: () -> Void
+    private let openSettingsHandler: () -> Void
     private let quitHandler: () -> Void
 
     private var speakingObserver: NSObjectProtocol?
+    private var cancellables = Set<AnyCancellable>()
     private var menu: NSMenu?
     private weak var pauseItem: NSMenuItem?
     private var isPaused = false
     private var isSpeaking = false
 
     init(
+        model: CodexSessionsViewModel,
         stopHandler: @escaping () -> Void,
         togglePauseHandler: @escaping () -> Void,
+        openSettingsHandler: @escaping () -> Void,
         quitHandler: @escaping () -> Void
     ) {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        self.model = model
         self.stopHandler = stopHandler
         self.togglePauseHandler = togglePauseHandler
+        self.openSettingsHandler = openSettingsHandler
         self.quitHandler = quitHandler
         super.init()
 
@@ -32,8 +40,20 @@ final class StatusItemController: NSObject {
             button.toolTip = "Mouth"
         }
 
+        isPaused = model.isPaused
         updateIcon(isSpeaking: false)
         buildMenu()
+
+        model.$isPaused
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] paused in
+                guard let self else { return }
+                self.isPaused = paused
+                self.updatePauseMenuItem()
+                self.updateIcon()
+            }
+            .store(in: &cancellables)
 
         speakingObserver = NotificationCenter.default.addObserver(
             forName: .codexVoiceAnnouncerSpeakingChanged,
@@ -76,13 +96,13 @@ final class StatusItemController: NSObject {
         menu.addItem(pause)
         pauseItem = pause
 
-        let settings = NSMenuItem(title: "Settings…", action: #selector(didOpenSettings), keyEquivalent: "")
+        let settings = NSMenuItem(title: "Settings…", action: #selector(didOpenSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(title: "Exit", action: #selector(didQuit), keyEquivalent: "")
+        let quit = NSMenuItem(title: "Quit", action: #selector(didQuit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
 
@@ -98,16 +118,16 @@ final class StatusItemController: NSObject {
             isSpeaking = false
             updateIcon()
         } else {
-            togglePause()
+            togglePauseHandler()
         }
     }
 
     @objc private func didTogglePause() {
-        togglePause()
+        togglePauseHandler()
     }
 
     @objc private func didOpenSettings() {
-        // no-op for now
+        openSettingsHandler()
     }
 
     @objc private func didQuit() {
@@ -116,13 +136,6 @@ final class StatusItemController: NSObject {
 
     private func updatePauseMenuItem() {
         pauseItem?.title = isPaused ? "Resume" : "Pause"
-    }
-
-    private func togglePause() {
-        isPaused.toggle()
-        updatePauseMenuItem()
-        updateIcon()
-        togglePauseHandler()
     }
 
     private func updateIcon(isSpeaking: Bool) {

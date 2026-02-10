@@ -12,10 +12,16 @@ struct MouthApp: App {
         let model = CodexSessionsViewModel(engine: engine)
         _sessionsModel = StateObject(wrappedValue: model)
 
-        statusItemController = StatusItemController(stopHandler: {
+        statusItemController = StatusItemController(model: model, stopHandler: {
             model.stopSpeakingAndClearQueue()
         }, togglePauseHandler: {
             model.togglePaused()
+        }, openSettingsHandler: {
+            NSApp.activate(ignoringOtherApps: true)
+            let sel = Selector(("showSettingsWindow:"))
+            if !NSApp.sendAction(sel, to: nil, from: nil) {
+                _ = NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+            }
         }, quitHandler: {
             NSApp.terminate(nil)
         })
@@ -24,6 +30,9 @@ struct MouthApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(model: sessionsModel)
+        }
+        Settings {
+            SettingsView(model: sessionsModel)
         }
     }
 }
