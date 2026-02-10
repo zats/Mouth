@@ -1,0 +1,41 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
+DerivedData/
+build/
+*.xcscmblueprint
+*.xccheckout
+
+# User-specific Xcode settings
+xcuserdata/
+*.xcuserstate
+
+# Logs
+*.log
+
+# Swift Package Manager
+.build/
+Packages/
+Package.resolved
+
+# Carthage
+Carthage/Build/
+
+# CocoaPods
+Pods/
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output/
+
+# Code injection (common)
+iOSInjectionProject/
+
+# Ruby/Bundler
+.bundle/
+vendor/bundle/
