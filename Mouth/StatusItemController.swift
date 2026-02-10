@@ -39,9 +39,19 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         super.init()
 
         if let button = statusItem.button {
-            button.target = self
-            button.action = #selector(didClick)
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            // NSStatusBarButton may swallow command-click (Cmd-drag is used to rearrange items).
+            // Gesture recognizers are more reliable for modified clicks (Cmd, Ctrl, etc).
+            button.target = nil
+            button.action = nil
+
+            let leftClick = NSClickGestureRecognizer(target: self, action: #selector(didLeftClick(_:)))
+            leftClick.buttonMask = 0x1
+            button.addGestureRecognizer(leftClick)
+
+            let rightClick = NSClickGestureRecognizer(target: self, action: #selector(didRightClick(_:)))
+            rightClick.buttonMask = 0x2
+            button.addGestureRecognizer(rightClick)
+
             button.imagePosition = .imageOnly
             button.toolTip = "Mouth"
         }
@@ -101,19 +111,26 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
     }
 
-    @objc private func didClick() {
-        guard let event = NSApp.currentEvent else {
-            handleLeftClick(commandHeld: false)
-            return
-        }
+    @objc private func didLeftClick(_ recognizer: NSGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
 
-        switch event.type {
-        case .rightMouseUp, .rightMouseDown:
+        let flags = NSApp.currentEvent?.modifierFlags ?? []
+
+        // Treat control-click as right-click (common macOS convention).
+        if flags.contains(.control) {
             if let menu {
                 statusItem.popUpMenu(menu)
             }
-        default:
-            handleLeftClick(commandHeld: event.modifierFlags.contains(.command))
+            return
+        }
+
+        handleLeftClick(commandHeld: flags.contains(.command))
+    }
+
+    @objc private func didRightClick(_ recognizer: NSGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
+        if let menu {
+            statusItem.popUpMenu(menu)
         }
     }
 
