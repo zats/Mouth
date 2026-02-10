@@ -39,9 +39,9 @@ final class SaySpeech {
         var displayName: String {
             switch self {
             case .macOSSay:
-                return "macOS say"
+                return "say - default"
             case .sag:
-                return "SAG (ElevenLabs)"
+                return "sag - ElevenLabs"
             }
         }
     }
