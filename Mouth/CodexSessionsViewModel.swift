@@ -7,6 +7,12 @@ final class CodexSessionsViewModel: ObservableObject {
     private let engine: MouthEngine
     private let announcer: CodexVoiceAnnouncer
 
+    func stopSpeakingAndClearQueue() {
+        Task {
+            await announcer.stopAll()
+        }
+    }
+
     init(engine: MouthEngine) {
         self.engine = engine
         self.announcer = CodexVoiceAnnouncer()

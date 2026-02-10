@@ -18,6 +18,7 @@ actor CodexVoiceAnnouncer {
     private var currentSpeech: SaySpeech.Playback?
 
     private var didPauseExternalPlayback = false
+    private var isSpeaking = false
 
     func enqueue(_ event: CodexAssistantMessageEvent) {
         queue.append(Item(
@@ -42,10 +43,16 @@ actor CodexVoiceAnnouncer {
         currentSpeech = nil
         runner?.cancel()
         runner = nil
+        setSpeaking(false)
     }
 
     private func run() async {
-        defer { runner = nil }
+        defer {
+            runner = nil
+            setSpeaking(false)
+        }
+
+        setSpeaking(true)
 
         // Pause external playback once for the whole batch (best-effort).
         if !didPauseExternalPlayback, SystemAudioActivity.isOutputDeviceRunningSomewhere() {
@@ -92,5 +99,15 @@ actor CodexVoiceAnnouncer {
 
     private func delimiterSoundURL() -> URL? {
         Bundle.main.url(forResource: "codex_delimiter", withExtension: "wav")
+    }
+
+    private func setSpeaking(_ speaking: Bool) {
+        if isSpeaking == speaking { return }
+        isSpeaking = speaking
+        NotificationCenter.default.post(
+            name: .codexVoiceAnnouncerSpeakingChanged,
+            object: nil,
+            userInfo: ["speaking": speaking]
+        )
     }
 }
