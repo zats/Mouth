@@ -17,6 +17,8 @@ actor CodexVoiceAnnouncer {
     private var currentDelimiter: AfplaySound.Playback?
     private var currentSpeech: SaySpeech.Playback?
 
+    private var didPauseExternalPlayback = false
+
     func enqueue(_ event: CodexAssistantMessageEvent) {
         queue.append(Item(
             sessionID: event.sessionID,
@@ -45,8 +47,21 @@ actor CodexVoiceAnnouncer {
     private func run() async {
         defer { runner = nil }
 
+        // Pause external playback once for the whole batch (best-effort).
+        if !didPauseExternalPlayback, SystemAudioActivity.isOutputDeviceRunningSomewhere() {
+            MediaKeyController.togglePlayPause()
+            didPauseExternalPlayback = true
+
+            // Give the target player a moment to react before we play our delimiter/speech.
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+
         while !Task.isCancelled {
             guard !queue.isEmpty else {
+                if didPauseExternalPlayback {
+                    MediaKeyController.togglePlayPause()
+                    didPauseExternalPlayback = false
+                }
                 return
             }
 
