@@ -1,15 +1,15 @@
-import AppKit
 import Foundation
 
 final class MouthEngine {
     private let queue = DispatchQueue(label: "com.zats.Mouth.Engine", qos: .userInitiated)
 
     private var timer: DispatchSourceTimer?
-    private var lastFrontmostPid: pid_t?
 
     // Keyed by Codex PID.
     private var watchers: [pid_t: FileChangeWatcher] = [:]
     private var watchedSessionPathByPid: [pid_t: String] = [:]
+    private var knownCodexPids = Set<pid_t>()
+    private var lastNoSessionLogAtByPid: [pid_t: Date] = [:]
 
     func start() {
         log("start")
@@ -17,7 +17,7 @@ final class MouthEngine {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: .seconds(1), leeway: .milliseconds(200))
         timer.setEventHandler { [weak self] in
-            self?.tick()
+            self?.rescan()
         }
         self.timer = timer
         timer.resume()
@@ -33,67 +33,38 @@ final class MouthEngine {
         }
         watchers.removeAll()
         watchedSessionPathByPid.removeAll()
+        knownCodexPids.removeAll()
+        lastNoSessionLogAtByPid.removeAll()
     }
 
-    private func tick() {
-        autoreleasepool {
-            let frontmost = NSWorkspace.shared.frontmostApplication
-            let frontmostPid = frontmost?.processIdentifier
-
-            if frontmostPid != lastFrontmostPid {
-                lastFrontmostPid = frontmostPid
-
-                let bundleID = frontmost?.bundleIdentifier ?? "(nil)"
-                let name = frontmost?.localizedName ?? "(nil)"
-                log("frontmost: \(name) pid=\(frontmostPid.map(String.init) ?? "nil") bundle=\(bundleID)")
-            }
-
-            guard let frontmostPid else {
-                rescan(frontmostPid: nil)
-                return
-            }
-
-            rescan(frontmostPid: frontmostPid)
-        }
-    }
-
-    private func rescan(frontmostPid: pid_t?) {
+    private func rescan() {
         let snapshot = ProcessSnapshot.capture()
 
         let codexProcs = snapshot.byPid.values
             .filter { isCodexLikeProcess($0) }
 
-        if codexProcs.isEmpty {
-            stopWatchingAll()
-            return
+        let currentPids = Set(codexProcs.map(\.pid))
+
+        // Stop watchers for Codex processes that have exited.
+        for (pid, _) in watchers where !currentPids.contains(pid) {
+            stopWatching(pid: pid, reason: "process exited")
         }
 
-        var visibleCodexPids = Set<pid_t>()
-        if let frontmostPid {
-            for p in codexProcs {
-                if snapshot.isDescendant(p.pid, of: frontmostPid) {
-                    visibleCodexPids.insert(p.pid)
-                }
+        // Log newly discovered Codex processes.
+        let newPids = currentPids.subtracting(knownCodexPids)
+        if !newPids.isEmpty {
+            for pid in newPids.sorted() {
+                guard let p = snapshot.byPid[pid] else { continue }
+                log("codex discovered pid=\(p.pid) ppid=\(p.ppid) name=\(p.name) path=\(p.path ?? "(nil)")")
             }
         }
+        knownCodexPids = currentPids
 
-        // If Codex itself is frontmost, treat it as visible too.
-        if let frontmostPid, codexProcs.contains(where: { $0.pid == frontmostPid }) {
-            visibleCodexPids.insert(frontmostPid)
-        }
-
-        // Stop watchers for Codex processes that are no longer visible.
-        for (pid, _) in watchers {
-            if !visibleCodexPids.contains(pid) {
-                stopWatching(pid: pid)
-            }
-        }
-
-        // Start/refresh watchers for visible Codex processes.
-        for proc in codexProcs where visibleCodexPids.contains(proc.pid) {
+        // Start/refresh watchers for any Codex process that appears to have a session file open.
+        for proc in codexProcs {
             do {
                 guard let sessionURL = try ProcOpenFiles.findCodexSessionFile(pid: proc.pid) else {
-                    log("codex pid=\(proc.pid) visible=yes but no session file found in open fds")
+                    maybeLogNoSession(pid: proc.pid)
                     continue
                 }
 
@@ -102,10 +73,9 @@ final class MouthEngine {
                     continue
                 }
 
-                let sessionID = sessionURL.deletingPathExtension().lastPathComponent
+                let sessionID = ProcOpenFiles.extractSessionID(fromSessionFileURL: sessionURL)
 
-                log("codex visible pid=\(proc.pid) ppid=\(proc.ppid) name=\(proc.name) path=\(proc.path ?? "(nil)")")
-                log("codex session pid=\(proc.pid) id=\(sessionID)")
+                log("codex session pid=\(proc.pid) id=\(sessionID ?? "(unparsed)")")
                 log("codex session pid=\(proc.pid) file=\(sessionPath)")
 
                 startWatching(pid: proc.pid, sessionURL: sessionURL)
@@ -113,14 +83,10 @@ final class MouthEngine {
                 log("codex pid=\(proc.pid) failed to inspect open files: \(error)")
             }
         }
-
-        if visibleCodexPids.isEmpty {
-            stopWatchingAll()
-        }
     }
 
     private func startWatching(pid: pid_t, sessionURL: URL) {
-        stopWatching(pid: pid)
+        stopWatching(pid: pid, reason: "replacing watcher")
 
         let watcher = FileChangeWatcher(url: sessionURL)
         do {
@@ -129,7 +95,7 @@ final class MouthEngine {
 
                 // If the file was rotated/renamed/deleted, attempt a quick re-resolve on next tick.
                 if event.contains(.delete) || event.contains(.rename) || event.contains(.revoke) {
-                    self?.watchedSessionPathByPid[pid] = nil
+                    self?.stopWatching(pid: pid, reason: "session file rotated")
                 }
             }
             watchers[pid] = watcher
@@ -139,18 +105,21 @@ final class MouthEngine {
         }
     }
 
-    private func stopWatching(pid: pid_t) {
+    private func stopWatching(pid: pid_t, reason: String) {
+        guard watchers[pid] != nil else { return }
         watchers[pid]?.stop()
         watchers[pid] = nil
         watchedSessionPathByPid[pid] = nil
-        log("stop watching pid=\(pid)")
+        log("stop watching pid=\(pid) reason=\(reason)")
     }
 
-    private func stopWatchingAll() {
-        if watchers.isEmpty { return }
-        for (pid, _) in watchers {
-            stopWatching(pid: pid)
+    private func maybeLogNoSession(pid: pid_t) {
+        let now = Date()
+        if let last = lastNoSessionLogAtByPid[pid], now.timeIntervalSince(last) < 10 {
+            return
         }
+        lastNoSessionLogAtByPid[pid] = now
+        log("codex pid=\(pid) has no open session file under ~/.codex/sessions")
     }
 
     private func isCodexLikeProcess(_ p: ProcessSnapshot.ProcessInfo) -> Bool {
@@ -159,17 +128,17 @@ final class MouthEngine {
             return true
         }
 
-        if name == "codex" || name == "codexbar" {
+        // Prefer filtering by the executable path (proc_pidpath), so we don't match Electron helper processes.
+        guard let path = p.path?.lowercased() else { return false }
+        let base = URL(fileURLWithPath: path).lastPathComponent.lowercased()
+
+        if base == "codex" || base.hasPrefix("codex-") || base.hasPrefix("codex_") || base.hasPrefix("codex.") {
             return true
         }
 
-        if let path = p.path?.lowercased() {
-            let base = URL(fileURLWithPath: path).lastPathComponent.lowercased()
-            if base == "codex" || base.hasPrefix("codex-") || base.contains("codex") {
-                // Avoid Electron helper processes like "Codex Helper" which don't have a codex executable basename.
-                if base.contains("helper") { return false }
-                return true
-            }
+        // Codex desktop app bundles ship an internal CLI-like binary at Contents/Resources/codex.
+        if path.contains("/codex.app/contents/resources/codex") {
+            return true
         }
 
         return false

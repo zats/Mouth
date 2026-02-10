@@ -57,16 +57,43 @@ enum ProcOpenFiles {
         let openFiles = try listOpenFiles(pid: pid)
 
         // Prefer session jsonl files (Codex keeps a per-session rollout log under ~/.codex/sessions/...)
-        let candidates = openFiles
+        let candidates: [String] = openFiles
             .map { $0.path }
             .filter { $0.contains("/.codex/sessions/") }
             .filter { $0.hasSuffix(".jsonl") || $0.hasSuffix(".json") }
 
-        guard let best = candidates.sorted(by: { $0.count < $1.count }).first else {
+        if candidates.isEmpty {
             return nil
         }
 
+        let rollout = candidates.filter { URL(fileURLWithPath: $0).lastPathComponent.hasPrefix("rollout-") }
+        let pool = rollout.isEmpty ? candidates : rollout
+
+        // Prefer the most recently modified file.
+        let fm = FileManager.default
+        let best = pool.max { lhs, rhs in
+            let lmt = (try? fm.attributesOfItem(atPath: lhs)[.modificationDate] as? Date) ?? .distantPast
+            let rmt = (try? fm.attributesOfItem(atPath: rhs)[.modificationDate] as? Date) ?? .distantPast
+            return lmt < rmt
+        }
+
+        guard let best else { return nil }
         return URL(fileURLWithPath: best)
+    }
+
+    static func extractSessionID(fromSessionFileURL url: URL) -> String? {
+        // Example filename:
+        // rollout-2026-02-10T09-22-00-019c47ee-3a99-7502-96f3-7543c08076d6.jsonl
+        let base = url.deletingPathExtension().lastPathComponent
+
+        // Match a UUID-looking suffix (Codex session ids are typically UUID-ish).
+        let pattern = #"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"#
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+
+        let range = NSRange(base.startIndex..<base.endIndex, in: base)
+        guard let m = re.firstMatch(in: base, range: range), m.numberOfRanges >= 2 else { return nil }
+        guard let r = Range(m.range(at: 1), in: base) else { return nil }
+        return String(base[r])
     }
 
     private static func posixError(_ what: String) -> NSError {
