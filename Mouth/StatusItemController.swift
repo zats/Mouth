@@ -47,10 +47,8 @@ final class StatusItemController: NSObject {
 
         let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
             ?? NSImage(systemSymbolName: fallback, accessibilityDescription: nil)
-
         img?.isTemplate = true
         statusItem.button?.image = img
-
         statusItem.button?.toolTip = isSpeaking ? "Stop speaking" : "Mouth"
     }
 }
