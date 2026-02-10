@@ -2,7 +2,6 @@ import Foundation
 import Combine
 
 final class CodexSessionsViewModel: ObservableObject {
-    @Published private(set) var sessions: [CodexActiveSession] = []
     @Published private(set) var isPaused = false
 
     private let engine: MouthEngine
@@ -29,10 +28,6 @@ final class CodexSessionsViewModel: ObservableObject {
     init(engine: MouthEngine) {
         self.engine = engine
         self.announcer = CodexVoiceAnnouncer()
-
-        engine.onSessionsChanged = { [weak self] sessions in
-            self?.sessions = sessions
-        }
 
         engine.onNewAssistantMessage = { [weak self] event in
             guard let self else { return }

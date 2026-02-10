@@ -16,6 +16,7 @@ actor CodexVoiceAnnouncer {
 
     private var currentDelimiter: AfplaySound.Playback?
     private var currentSpeech: SaySpeech.Playback?
+    private var currentItem: Item?
 
     private var didPauseExternalPlayback = false
     private var isSpeaking = false
@@ -48,6 +49,7 @@ actor CodexVoiceAnnouncer {
         currentSpeech = nil
         runner?.cancel()
         runner = nil
+        setCurrentItem(nil)
         setSpeaking(false)
     }
 
@@ -61,6 +63,7 @@ actor CodexVoiceAnnouncer {
     private func run() async {
         defer {
             runner = nil
+            setCurrentItem(nil)
             setSpeaking(false)
         }
 
@@ -89,6 +92,7 @@ actor CodexVoiceAnnouncer {
             }
 
             let item = queue.removeFirst()
+            setCurrentItem(item)
 
             // Delimiter sound before each spoken message.
             if let url = delimiterSoundURL() {
@@ -124,6 +128,22 @@ actor CodexVoiceAnnouncer {
             name: .codexVoiceAnnouncerSpeakingChanged,
             object: nil,
             userInfo: ["speaking": speaking]
+        )
+    }
+
+    private func setCurrentItem(_ item: Item?) {
+        if currentItem == item { return }
+        currentItem = item
+
+        var info: [AnyHashable: Any] = [:]
+        if let id = item?.sessionID {
+            info["sessionID"] = id
+        }
+
+        NotificationCenter.default.post(
+            name: .codexVoiceAnnouncerCurrentItemChanged,
+            object: nil,
+            userInfo: info
         )
     }
 }

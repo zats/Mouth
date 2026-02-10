@@ -28,9 +28,6 @@ struct MouthApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
-            ContentView(model: sessionsModel)
-        }
         Settings {
             SettingsView(model: sessionsModel)
         }

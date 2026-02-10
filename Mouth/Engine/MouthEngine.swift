@@ -5,7 +5,6 @@ final class MouthEngine {
 
     private var timer: DispatchSourceTimer?
 
-    var onSessionsChanged: (([CodexActiveSession]) -> Void)?
     var onNewAssistantMessage: ((CodexAssistantMessageEvent) -> Void)?
 
     private let iso = ISO8601DateFormatter()
@@ -16,7 +15,6 @@ final class MouthEngine {
         let sessionID: String?
         let watcher: FileChangeWatcher
         var pids: Set<pid_t>
-        var lastChangeAt: Date?
         var fileModificationDate: Date?
         var fileSizeBytes: UInt64?
         var readOffset: UInt64
@@ -60,8 +58,6 @@ final class MouthEngine {
         sessionWatchesByPath.removeAll()
         knownCodexPids.removeAll()
         lastNoSessionLogAtByPid.removeAll()
-
-        emitSessions()
     }
 
     func setPaused(_ paused: Bool) {
@@ -73,7 +69,6 @@ final class MouthEngine {
             if !paused {
                 // On resume, fast-forward session offsets so we don't emit/speak backlog.
                 self.primeAllSessionWatches()
-                self.emitSessions()
             }
         }
     }
@@ -139,8 +134,6 @@ final class MouthEngine {
 
         // Poll watched files for changes. Some writers don't reliably trigger kqueue file events.
         pollWatchedFiles()
-
-        emitSessions()
     }
 
     private func updatePid(_ pid: pid_t, sessionURL: URL?) {
@@ -167,7 +160,6 @@ final class MouthEngine {
         log("codex session pid=\(pid) file=\(newPath)")
 
         addPid(pid, toSessionURL: sessionURL)
-        emitSessions()
     }
 
     private func addPid(_ pid: pid_t, toSessionURL sessionURL: URL) {
@@ -200,7 +192,6 @@ final class MouthEngine {
                 self.log("session changed pids=\(pids) event=\(event) file=\(path)")
 
                 if var sw = self.sessionWatchesByPath[path] {
-                    sw.lastChangeAt = Date()
                     let (mtime, _) = self.fileMTime(path: path)
                     sw.fileModificationDate = mtime
                     let (size, _) = self.fileSize(path: path)
@@ -210,7 +201,6 @@ final class MouthEngine {
 
                 // Proactively parse on event; some writers don't reliably trigger events.
                 self.pollWatchedFiles()
-                self.emitSessions()
 
                 // If the file was rotated/renamed/deleted, attempt a quick re-resolve on next tick.
                 if event.contains(.delete) || event.contains(.rename) || event.contains(.revoke) {
@@ -229,7 +219,6 @@ final class MouthEngine {
 	                sessionID: sessionID,
 	                watcher: watcher,
 	                pids: [pid],
-	                lastChangeAt: nil,
 	                fileModificationDate: mtime,
 	                fileSizeBytes: size,
 	                readOffset: initialOffset,
@@ -277,8 +266,6 @@ final class MouthEngine {
         } else {
             sessionWatchesByPath[path] = sw
         }
-
-        emitSessions()
     }
 
     private func invalidateSessionPath(_ path: String, reason: String) {
@@ -292,8 +279,6 @@ final class MouthEngine {
         sw.watcher.stop()
         sessionWatchesByPath[path] = nil
         log("invalidated session file=\(path) reason=\(reason)")
-
-        emitSessions()
     }
 
     private func handlePidExit(pid: pid_t) {
@@ -302,8 +287,6 @@ final class MouthEngine {
         } else {
             pidToSessionPath[pid] = nil
         }
-
-        emitSessions()
     }
 
     private func maybeLogNoSession(pid: pid_t) {
@@ -315,41 +298,12 @@ final class MouthEngine {
         log("codex pid=\(pid) has no open session file under ~/.codex/sessions")
     }
 
-    private func emitSessions() {
-        guard let onSessionsChanged else { return }
-
-        let sessions: [CodexActiveSession] = sessionWatchesByPath
-            .values
-            .map { sw in
-                CodexActiveSession(
-                    sessionID: sw.sessionID,
-                    fileURL: sw.url,
-                    pids: sw.pids.sorted(),
-                    lastChangeAt: sw.lastChangeAt,
-                    fileModificationDate: sw.fileModificationDate,
-                    fileSizeBytes: sw.fileSizeBytes,
-                    latestAssistantText: sw.latestAssistantText,
-                    latestAssistantAt: sw.latestAssistantAt
-                )
-            }
-            .sorted { lhs, rhs in
-                let l = lhs.lastChangeAt ?? lhs.fileModificationDate ?? .distantPast
-                let r = rhs.lastChangeAt ?? rhs.fileModificationDate ?? .distantPast
-                if l != r { return l > r }
-                return lhs.fileURL.path < rhs.fileURL.path
-            }
-
-        DispatchQueue.main.async {
-            onSessionsChanged(sessions)
-        }
-    }
-
     private func pollWatchedFiles() {
         if paused {
             return
         }
 
-        // If mtime or size changes, bump lastChangeAt so UI refreshes.
+        // Some writers don't reliably trigger kqueue file events, so we also poll mtime/size.
         let snapshot = sessionWatchesByPath
         for (path, var sw) in snapshot {
             let (mtime, _) = fileMTime(path: path)
@@ -410,7 +364,6 @@ final class MouthEngine {
             if mtimeChanged || sizeChanged {
                 sw.fileModificationDate = mtime ?? sw.fileModificationDate
                 sw.fileSizeBytes = size ?? sw.fileSizeBytes
-                sw.lastChangeAt = Date()
                 sessionWatchesByPath[path] = sw
             } else {
                 // Keep the updated readOffset/latestAssistant even if metadata didn't change.
@@ -568,7 +521,9 @@ final class MouthEngine {
     }
 
     private func log(_ msg: String) {
+        #if DEBUG
         let ts = ISO8601DateFormatter().string(from: Date())
         print("[MouthEngine \(ts)] \(msg)")
+        #endif
     }
 }
