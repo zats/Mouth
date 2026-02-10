@@ -15,7 +15,6 @@ final class StatusItemController: NSObject {
     private var cancellables = Set<AnyCancellable>()
     private var menu: NSMenu?
     private weak var pauseItem: NSMenuItem?
-    private weak var openThreadItem: NSMenuItem?
     private var currentSpeakingSessionID: String?
     private var isPaused = false
     private var isSpeaking = false
@@ -55,7 +54,6 @@ final class StatusItemController: NSObject {
                 guard let self else { return }
                 self.isPaused = paused
                 self.updatePauseMenuItem()
-                self.updateOpenThreadMenuItem()
                 self.updateIcon()
             }
             .store(in: &cancellables)
@@ -71,7 +69,6 @@ final class StatusItemController: NSObject {
             if !speaking {
                 self.currentSpeakingSessionID = nil
             }
-            self.updateOpenThreadMenuItem()
             self.updateIcon()
         }
 
@@ -82,7 +79,6 @@ final class StatusItemController: NSObject {
         ) { [weak self] note in
             guard let self else { return }
             self.currentSpeakingSessionID = note.userInfo?["sessionID"] as? String
-            self.updateOpenThreadMenuItem()
         }
     }
 
@@ -114,11 +110,6 @@ final class StatusItemController: NSObject {
     private func buildMenu() {
         let menu = NSMenu()
 
-        let openThread = NSMenuItem(title: "Open Thread in Codex", action: #selector(didOpenThread), keyEquivalent: "")
-        openThread.target = self
-        menu.addItem(openThread)
-        openThreadItem = openThread
-
         let pause = NSMenuItem(title: "Pause", action: #selector(didTogglePause), keyEquivalent: "")
         pause.target = self
         menu.addItem(pause)
@@ -136,7 +127,6 @@ final class StatusItemController: NSObject {
 
         self.menu = menu
         updatePauseMenuItem()
-        updateOpenThreadMenuItem()
     }
 
     private func handleLeftClick() {
@@ -146,7 +136,6 @@ final class StatusItemController: NSObject {
             stopHandler()
             isSpeaking = false
             currentSpeakingSessionID = nil
-            updateOpenThreadMenuItem()
             updateIcon()
         } else {
             togglePauseHandler()
@@ -155,10 +144,6 @@ final class StatusItemController: NSObject {
 
     @objc private func didTogglePause() {
         togglePauseHandler()
-    }
-
-    @objc private func didOpenThread() {
-        _ = openCurrentThreadInCodex()
     }
 
     @objc private func didOpenSettings() {
@@ -171,16 +156,6 @@ final class StatusItemController: NSObject {
 
     private func updatePauseMenuItem() {
         pauseItem?.title = isPaused ? "Resume" : "Pause"
-    }
-
-    private func updateOpenThreadMenuItem() {
-        guard let item = openThreadItem else { return }
-
-        if isSpeaking, let id = currentSpeakingSessionID, canOpenCodexThread(sessionID: id) {
-            item.isEnabled = true
-        } else {
-            item.isEnabled = false
-        }
     }
 
     private func canOpenCodexThread(sessionID: String) -> Bool {
