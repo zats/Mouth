@@ -5,9 +5,18 @@ final class MouthEngine {
 
     private var timer: DispatchSourceTimer?
 
-    // Keyed by Codex PID.
-    private var watchers: [pid_t: FileChangeWatcher] = [:]
-    private var watchedSessionPathByPid: [pid_t: String] = [:]
+    private struct SessionWatch {
+        let url: URL
+        let watcher: FileChangeWatcher
+        var pids: Set<pid_t>
+    }
+
+    // PID -> session file path
+    private var pidToSessionPath: [pid_t: String] = [:]
+
+    // Session file path -> watcher (deduped)
+    private var sessionWatchesByPath: [String: SessionWatch] = [:]
+
     private var knownCodexPids = Set<pid_t>()
     private var lastNoSessionLogAtByPid: [pid_t: Date] = [:]
 
@@ -28,11 +37,12 @@ final class MouthEngine {
         timer?.cancel()
         timer = nil
 
-        for (_, watcher) in watchers {
-            watcher.stop()
+        for (_, sw) in sessionWatchesByPath {
+            sw.watcher.stop()
         }
-        watchers.removeAll()
-        watchedSessionPathByPid.removeAll()
+
+        pidToSessionPath.removeAll()
+        sessionWatchesByPath.removeAll()
         knownCodexPids.removeAll()
         lastNoSessionLogAtByPid.removeAll()
     }
@@ -45,9 +55,12 @@ final class MouthEngine {
 
         let currentPids = Set(codexProcs.map(\.pid))
 
-        // Stop watchers for Codex processes that have exited.
-        for (pid, _) in watchers where !currentPids.contains(pid) {
-            stopWatching(pid: pid, reason: "process exited")
+        // Handle exited PIDs.
+        let exited = knownCodexPids.subtracting(currentPids)
+        if !exited.isEmpty {
+            for pid in exited.sorted() {
+                handlePidExit(pid: pid)
+            }
         }
 
         // Log newly discovered Codex processes.
@@ -60,57 +73,130 @@ final class MouthEngine {
         }
         knownCodexPids = currentPids
 
-        // Start/refresh watchers for any Codex process that appears to have a session file open.
+        // Resolve PID -> session mapping and update watchers accordingly.
         for proc in codexProcs {
             do {
                 guard let sessionURL = try ProcOpenFiles.findCodexSessionFile(pid: proc.pid) else {
                     maybeLogNoSession(pid: proc.pid)
+
+                    // If a process previously had a session and now doesn't, treat that as a session end.
+                    if pidToSessionPath[proc.pid] != nil {
+                        updatePid(proc.pid, sessionURL: nil)
+                    }
                     continue
                 }
 
-                let sessionPath = sessionURL.path
-                if watchedSessionPathByPid[proc.pid] == sessionPath {
-                    continue
-                }
-
-                let sessionID = ProcOpenFiles.extractSessionID(fromSessionFileURL: sessionURL)
-
-                log("codex session pid=\(proc.pid) id=\(sessionID ?? "(unparsed)")")
-                log("codex session pid=\(proc.pid) file=\(sessionPath)")
-
-                startWatching(pid: proc.pid, sessionURL: sessionURL)
+                updatePid(proc.pid, sessionURL: sessionURL)
             } catch {
                 log("codex pid=\(proc.pid) failed to inspect open files: \(error)")
             }
         }
+
+        // Cleanup any PID mappings that linger for PIDs that are no longer Codex-like.
+        // (Should be rare, but prevents leaks if a process changes identity.)
+        let mappedPids = Set(pidToSessionPath.keys)
+        let staleMapped = mappedPids.subtracting(currentPids)
+        if !staleMapped.isEmpty {
+            for pid in staleMapped.sorted() {
+                handlePidExit(pid: pid)
+            }
+        }
     }
 
-    private func startWatching(pid: pid_t, sessionURL: URL) {
-        stopWatching(pid: pid, reason: "replacing watcher")
+    private func updatePid(_ pid: pid_t, sessionURL: URL?) {
+        let oldPath = pidToSessionPath[pid]
+        let newPath = sessionURL?.path
+
+        if oldPath == newPath {
+            return
+        }
+
+        if let oldPath {
+            removePid(pid, fromSessionPath: oldPath, reason: newPath == nil ? "session ended" : "session switched")
+        }
+
+        guard let sessionURL, let newPath else {
+            pidToSessionPath[pid] = nil
+            return
+        }
+
+        pidToSessionPath[pid] = newPath
+
+        let sessionID = ProcOpenFiles.extractSessionID(fromSessionFileURL: sessionURL)
+        log("codex session pid=\(pid) id=\(sessionID ?? "(unparsed)")")
+        log("codex session pid=\(pid) file=\(newPath)")
+
+        addPid(pid, toSessionURL: sessionURL)
+    }
+
+    private func addPid(_ pid: pid_t, toSessionURL sessionURL: URL) {
+        let path = sessionURL.path
+
+        if var sw = sessionWatchesByPath[path] {
+            sw.pids.insert(pid)
+            sessionWatchesByPath[path] = sw
+            return
+        }
 
         let watcher = FileChangeWatcher(url: sessionURL)
         do {
             try watcher.start(queue: queue) { [weak self] event in
-                self?.log("session changed pid=\(pid) event=\(event) file=\(sessionURL.path)")
+                guard let self else { return }
+
+                // We may have multiple PIDs mapped to the same session file.
+                let pids = self.sessionWatchesByPath[path]?.pids.sorted() ?? []
+                self.log("session changed pids=\(pids) event=\(event) file=\(path)")
 
                 // If the file was rotated/renamed/deleted, attempt a quick re-resolve on next tick.
                 if event.contains(.delete) || event.contains(.rename) || event.contains(.revoke) {
-                    self?.stopWatching(pid: pid, reason: "session file rotated")
+                    self.invalidateSessionPath(path, reason: "session file rotated")
                 }
             }
-            watchers[pid] = watcher
-            watchedSessionPathByPid[pid] = sessionURL.path
+
+            let sw = SessionWatch(url: sessionURL, watcher: watcher, pids: [pid])
+            sessionWatchesByPath[path] = sw
         } catch {
-            log("failed to watch session file for pid=\(pid): \(error)")
+            log("failed to watch session file: \(path) error=\(error)")
         }
     }
 
-    private func stopWatching(pid: pid_t, reason: String) {
-        guard watchers[pid] != nil else { return }
-        watchers[pid]?.stop()
-        watchers[pid] = nil
-        watchedSessionPathByPid[pid] = nil
-        log("stop watching pid=\(pid) reason=\(reason)")
+    private func removePid(_ pid: pid_t, fromSessionPath path: String, reason: String) {
+        guard var sw = sessionWatchesByPath[path] else {
+            pidToSessionPath[pid] = nil
+            return
+        }
+
+        sw.pids.remove(pid)
+        pidToSessionPath[pid] = nil
+
+        if sw.pids.isEmpty {
+            sw.watcher.stop()
+            sessionWatchesByPath[path] = nil
+            log("stop watching session file=\(path) reason=\(reason)")
+        } else {
+            sessionWatchesByPath[path] = sw
+        }
+    }
+
+    private func invalidateSessionPath(_ path: String, reason: String) {
+        guard let sw = sessionWatchesByPath[path] else { return }
+
+        // Clear PID mappings so the next rescan re-resolves each PID's active session file.
+        for pid in sw.pids {
+            pidToSessionPath[pid] = nil
+        }
+
+        sw.watcher.stop()
+        sessionWatchesByPath[path] = nil
+        log("invalidated session file=\(path) reason=\(reason)")
+    }
+
+    private func handlePidExit(pid: pid_t) {
+        if let oldPath = pidToSessionPath[pid] {
+            removePid(pid, fromSessionPath: oldPath, reason: "process exited")
+        } else {
+            pidToSessionPath[pid] = nil
+        }
     }
 
     private func maybeLogNoSession(pid: pid_t) {
