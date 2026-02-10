@@ -3,6 +3,9 @@ import AppKit
 import IOKit.hidsystem
 
 enum MediaKeyController {
+    // Mark events we synthesize so we can ignore them in event taps.
+    static let eventSourceUserDataMagic: Int64 = 0x4D4F555448 // "MOUTH"
+
     // Uses the system-defined event mechanism (same path as media keys).
     // Best-effort: posting can be ignored depending on system/security state.
     static func togglePlayPause() {
@@ -31,7 +34,10 @@ enum MediaKeyController {
             data1: Int(downData1),
             data2: -1
         ) {
-            e.cgEvent?.post(tap: .cghidEventTap)
+            if let cg = e.cgEvent {
+                cg.setIntegerValueField(.eventSourceUserData, value: eventSourceUserDataMagic)
+                cg.post(tap: .cghidEventTap)
+            }
         }
 
         if let e = NSEvent.otherEvent(
@@ -45,7 +51,10 @@ enum MediaKeyController {
             data1: Int(upData1),
             data2: -1
         ) {
-            e.cgEvent?.post(tap: .cghidEventTap)
+            if let cg = e.cgEvent {
+                cg.setIntegerValueField(.eventSourceUserData, value: eventSourceUserDataMagic)
+                cg.post(tap: .cghidEventTap)
+            }
         }
     }
 }

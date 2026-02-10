@@ -19,6 +19,8 @@ final class StatusItemController: NSObject {
     private var isPaused = false
     private var isSpeaking = false
 
+    private var playPauseInterceptor: PlayPauseMediaKeyInterceptor?
+
     init(
         model: CodexSessionsViewModel,
         stopHandler: @escaping () -> Void,
@@ -33,6 +35,12 @@ final class StatusItemController: NSObject {
         self.openSettingsHandler = openSettingsHandler
         self.quitHandler = quitHandler
         super.init()
+
+        self.playPauseInterceptor = PlayPauseMediaKeyInterceptor(onPlayPauseKeyDown: { [weak self] in
+            DispatchQueue.main.async {
+                self?.stopSpeakingNow()
+            }
+        })
 
         if let button = statusItem.button {
             button.target = self
@@ -66,6 +74,7 @@ final class StatusItemController: NSObject {
             guard let self else { return }
             let speaking = (note.userInfo?["speaking"] as? Bool) ?? false
             self.isSpeaking = speaking
+            self.playPauseInterceptor?.setEnabled(speaking)
             if !speaking {
                 self.currentSpeakingSessionID = nil
             }
@@ -133,13 +142,17 @@ final class StatusItemController: NSObject {
         if isSpeaking {
             // Click while speaking: stop playback + clear queue.
             // Also update local state immediately so the next click toggles pause.
-            stopHandler()
-            isSpeaking = false
-            currentSpeakingSessionID = nil
-            updateIcon()
+            stopSpeakingNow()
         } else {
             togglePauseHandler()
         }
+    }
+
+    private func stopSpeakingNow() {
+        stopHandler()
+        isSpeaking = false
+        currentSpeakingSessionID = nil
+        updateIcon()
     }
 
     @objc private func didTogglePause() {
