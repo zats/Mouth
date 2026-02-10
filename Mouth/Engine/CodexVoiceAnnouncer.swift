@@ -71,7 +71,7 @@ actor CodexVoiceAnnouncer {
         setSpeaking(true)
 
         // Pause external playback once for the whole batch (best-effort).
-        if !didPauseExternalPlayback, SystemAudioActivity.isOutputDeviceRunningSomewhere() {
+        if !didPauseExternalPlayback, SystemAudioActivity.isAnyOtherProcessRunningOutput() {
             MediaKeyController.togglePlayPause()
             didPauseExternalPlayback = true
 
