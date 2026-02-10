@@ -150,9 +150,8 @@ final class StatusItemController: NSObject {
             // When disabled altogether: show mouth (not filled).
             img = NSImage(systemSymbolName: "mouth", accessibilityDescription: nil)
         } else if isSpeaking {
-            // When speaking: show custom pause badge icon.
-            img = NSImage(named: "custom.mouth.fill.badge.pause")
-                ?? NSImage(systemSymbolName: "pause.fill", accessibilityDescription: nil)
+            // When speaking: show stop icon.
+            img = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil)
         } else {
             // Enabled but idle: keep your original mouth.fill.
             img = NSImage(systemSymbolName: "mouth.fill", accessibilityDescription: nil)
