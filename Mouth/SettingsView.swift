@@ -117,9 +117,10 @@ struct SettingsView: View {
                         .foregroundStyle(.red)
                 }
             }
-
+            
             Toggle("Check for updates automatically", isOn: $autoUpdateEnabled)
                 .disabled(!updater.isAvailable)
+                .padding(.top, 12)
                 .padding(.bottom, 12)
 
             Button(isCheckingForUpdates ? "Checking for Updates…" : "Check for Updates…") {
