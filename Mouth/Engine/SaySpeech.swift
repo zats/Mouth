@@ -5,6 +5,7 @@ enum SaySpeechError: Error, LocalizedError {
     case failedToStart(underlying: Error)
     case terminated(status: Int32)
     case textEncodingFailed
+    case failedToWriteTempFile(underlying: Error)
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ enum SaySpeechError: Error, LocalizedError {
             return "Speech command exited with status \(status)"
         case .textEncodingFailed:
             return "Failed to encode text for speech wrapper"
+        case let .failedToWriteTempFile(underlying):
+            return "Failed to write temp speech text file: \(underlying)"
         }
     }
 }
@@ -80,12 +83,19 @@ final class SaySpeech {
 
         private let process: Process
         private var lifetimeWriteHandle: FileHandle?
+        private var cleanupURLs: [URL]
         private var terminationTask: Task<Int32, Never>?
 
-        fileprivate init(id: UUID, process: Process, lifetimeWriteHandle: FileHandle?) {
+        fileprivate init(
+            id: UUID,
+            process: Process,
+            lifetimeWriteHandle: FileHandle?,
+            cleanupURLs: [URL] = []
+        ) {
             self.id = id
             self.process = process
             self.lifetimeWriteHandle = lifetimeWriteHandle
+            self.cleanupURLs = cleanupURLs
 
             let task = Task {
                 await withCheckedContinuation { (cont: CheckedContinuation<Int32, Never>) in
@@ -127,7 +137,28 @@ final class SaySpeech {
                 try? h.close()
                 lifetimeWriteHandle = nil
             }
+
+            if !cleanupURLs.isEmpty {
+                for url in cleanupURLs {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                cleanupURLs.removeAll()
+            }
         }
+    }
+
+    private func writeTempTextFile(_ text: String) throws -> URL {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("Mouth", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let url = dir.appendingPathComponent("speech-\(UUID().uuidString).txt")
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            throw SaySpeechError.failedToWriteTempFile(underlying: error)
+        }
+        return url
     }
 
     // MARK: - Public
@@ -166,17 +197,14 @@ final class SaySpeech {
         let lifetimePipe = Pipe()
         process.standardInput = lifetimePipe
 
-        guard let textData = text.data(using: .utf8) else {
-            throw SaySpeechError.textEncodingFailed
-        }
-        let textB64 = textData.base64EncodedString()
+        let textFileURL = try writeTempTextFile(text)
 
         let script = Self.sayWrapperPython
 
         var args: [String] = ["-c", script, "--"]
         args.append((voice?.isEmpty ?? true) ? "" : (voice ?? ""))
         args.append(rate.map(String.init) ?? "")
-        args.append(textB64)
+        args.append(textFileURL.path)
         process.arguments = args
 
         // Avoid inheriting unexpected stdio state.
@@ -186,10 +214,16 @@ final class SaySpeech {
         do {
             try process.run()
         } catch {
+            try? FileManager.default.removeItem(at: textFileURL)
             throw SaySpeechError.failedToStart(underlying: error)
         }
 
-        return Playback(id: UUID(), process: process, lifetimeWriteHandle: lifetimePipe.fileHandleForWriting)
+        return Playback(
+            id: UUID(),
+            process: process,
+            lifetimeWriteHandle: lifetimePipe.fileHandleForWriting,
+            cleanupURLs: [textFileURL]
+        )
     }
 
     // MARK: - SAG (ElevenLabs)
@@ -206,10 +240,7 @@ final class SaySpeech {
         let lifetimePipe = Pipe()
         process.standardInput = lifetimePipe
 
-        guard let textData = text.data(using: .utf8) else {
-            throw SaySpeechError.textEncodingFailed
-        }
-        let textB64 = textData.base64EncodedString()
+        let textFileURL = try writeTempTextFile(text)
 
         // Prefer env var over CLI args so the API key doesn't appear in argv.
         var env = ProcessInfo.processInfo.environment
@@ -222,7 +253,7 @@ final class SaySpeech {
         args.append(sagURL.path)
         args.append((voice?.isEmpty ?? true) ? "" : (voice ?? ""))
         args.append(rate.map(String.init) ?? "")
-        args.append(textB64)
+        args.append(textFileURL.path)
         process.arguments = args
 
         // Avoid inheriting unexpected stdio state.
@@ -232,10 +263,16 @@ final class SaySpeech {
         do {
             try process.run()
         } catch {
+            try? FileManager.default.removeItem(at: textFileURL)
             throw SaySpeechError.failedToStart(underlying: error)
         }
 
-        return Playback(id: UUID(), process: process, lifetimeWriteHandle: lifetimePipe.fileHandleForWriting)
+        return Playback(
+            id: UUID(),
+            process: process,
+            lifetimeWriteHandle: lifetimePipe.fileHandleForWriting,
+            cleanupURLs: [textFileURL]
+        )
     }
 
     // MARK: - Keychain (SAG API key)
@@ -350,9 +387,8 @@ final class SaySpeech {
     }
 
     // Python wrapper arguments (after "--"):
-    // 1) voice (or ""), 2) rate (or ""), 3) text_b64
+    // 1) voice (or ""), 2) rate (or ""), 3) text_path
     private static let sayWrapperPython = #"""
-import base64
 import os
 import select
 import signal
@@ -373,19 +409,24 @@ def main() -> int:
 
     voice = args[0]
     rate = args[1]
-    text_b64 = args[2]
+    text_path = args[2]
 
-    try:
-        text = base64.b64decode(text_b64.encode("ascii")).decode("utf-8", errors="replace")
-    except Exception:
+    if not os.path.exists(text_path):
         return 3
+
+    def cleanup():
+        try:
+            os.remove(text_path)
+        except Exception:
+            pass
 
     say_args = ["/usr/bin/say"]
     if voice:
         say_args += ["-v", voice]
     if rate:
         say_args += ["-r", rate]
-    say_args.append(text)
+    # Read from file to avoid argv length limits and option parsing surprises.
+    say_args += ["-f", text_path]
 
     # stdin is inherited from this wrapper (a pipe owned by the parent app). We set say's stdin
     # to DEVNULL to ensure it doesn't accidentally interact with our lifetime pipe.
@@ -403,6 +444,7 @@ def main() -> int:
     while True:
         rc = p.poll()
         if rc is not None:
+            cleanup()
             return int(rc)
 
         # If the parent app exits/crashes, our stdin pipe will close and become readable with EOF.
@@ -418,12 +460,14 @@ def main() -> int:
                     for _ in range(10):
                         rc = p.poll()
                         if rc is not None:
+                            cleanup()
                             return int(rc)
                         time.sleep(0.05)
                     try:
                         p.kill()
                     except Exception:
                         pass
+                    cleanup()
                     return 0
         except Exception:
             # If we can't read stdin for any reason, fall back to not force-stopping.
@@ -436,9 +480,8 @@ if __name__ == "__main__":
 """#
 
     // Python wrapper arguments (after "--"):
-    // 1) sag_path, 2) voice (or ""), 3) rate (or ""), 4) text_b64
+    // 1) sag_path, 2) voice (or ""), 3) rate (or ""), 4) text_path
     private static let sagWrapperPython = #"""
-import base64
 import os
 import select
 import signal
@@ -460,19 +503,24 @@ def main() -> int:
     sag_path = args[0]
     voice = args[1]
     rate = args[2]
-    text_b64 = args[3]
+    text_path = args[3]
 
-    try:
-        text = base64.b64decode(text_b64.encode("ascii")).decode("utf-8", errors="replace")
-    except Exception:
+    # SAG reads from file, so don't pre-decode; we just validate it exists early.
+    if not os.path.exists(text_path):
         return 3
+
+    def cleanup():
+        try:
+            os.remove(text_path)
+        except Exception:
+            pass
 
     sag_args = [sag_path, "speak"]
     if voice:
         sag_args += ["-v", voice]
     if rate:
         sag_args += ["-r", rate]
-    sag_args.append(text)
+    sag_args += ["-f", text_path]
 
     # stdin is inherited from this wrapper (a pipe owned by the parent app). We set sag's stdin
     # to DEVNULL to ensure it doesn't accidentally interact with our lifetime pipe.
@@ -490,6 +538,7 @@ def main() -> int:
     while True:
         rc = p.poll()
         if rc is not None:
+            cleanup()
             return int(rc)
 
         # If the parent app exits/crashes, our stdin pipe will close and become readable with EOF.
@@ -505,12 +554,14 @@ def main() -> int:
                     for _ in range(10):
                         rc = p.poll()
                         if rc is not None:
+                            cleanup()
                             return int(rc)
                         time.sleep(0.05)
                     try:
                         p.kill()
                     except Exception:
                         pass
+                    cleanup()
                     return 0
         except Exception:
             # If we can't read stdin for any reason, fall back to not force-stopping.
