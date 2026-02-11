@@ -58,103 +58,22 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 8) {
-                tabButton(title: "General", icon: "gearshape", tab: .general)
-                tabButton(title: "Speech", icon: "waveform", tab: .speech)
-                tabButton(title: "Updates", icon: "arrow.down.circle", tab: .updates)
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
+        TabView(selection: $selectedTab) {
+            generalPane
+                .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(SettingsTab.general)
 
-            centeredPane {
-                switch selectedTab {
-                case .general:
-                    VStack(alignment: .leading, spacing: 18) {
-                        Toggle("Mouth enabled", isOn: enabledBinding)
-                            .toggleStyle(.checkbox)
+            speechPane
+                .tabItem { Label("Speech", systemImage: "waveform") }
+                .tag(SettingsTab.speech)
 
-                        Toggle("Start at login", isOn: $launchAtLogin)
-                            .toggleStyle(.checkbox)
-
-                        Toggle("Pause music while speaking", isOn: $pauseExternalPlaybackWhileSpeaking)
-                            .toggleStyle(.checkbox)
-                    }
-
-                case .speech:
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack(spacing: 10) {
-                            Picker("Voice engine", selection: $speechProviderRaw) {
-                                Text(SaySpeech.Provider.macOSSay.displayName).tag(SaySpeech.Provider.macOSSay.rawValue)
-                                Text(SaySpeech.Provider.sag.displayName)
-                                    .tag(SaySpeech.Provider.sag.rawValue)
-                                    .disabled(!sagInstalled)
-                            }
-
-                            Button {
-                                testVoice()
-                            } label: {
-                                Label("Test", systemImage: "play.fill")
-                            }
-                            .disabled(testPlayback != nil)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        if sagInstalled, selectedProvider == .sag {
-                            ZStack(alignment: .trailing) {
-                                SecureField("ElevenLabs API key", text: $sagAPIKeyDraft)
-                                    .textFieldStyle(.roundedBorder)
-
-                                if sagHasAPIKey {
-                                    Button {
-                                        sagAPIKeyDraft = ""
-                                        persistSAGAPIKeySoon()
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help("Clear API key")
-                                    .padding(.trailing, 8)
-                                }
-                            }
-
-                            if let sagKeyError {
-                                Text(sagKeyError)
-                                    .font(.footnote)
-                                    .foregroundStyle(.red)
-                            }
-                        }
-                    }
-
-                case .updates:
-                    VStack(alignment: .leading, spacing: 14) {
-                        Toggle("Check for updates automatically", isOn: $autoUpdateEnabled)
-                            .toggleStyle(.checkbox)
-                            .disabled(!updater.isAvailable)
-
-                        Button(isCheckingForUpdates ? "Checking for Updates…" : "Check for Updates…") {
-                            updater.checkForUpdates(nil)
-                        }
-                        .disabled(!updater.isAvailable || isCheckingForUpdates)
-
-                        if !updaterStatusMessage.isEmpty {
-                            Text(updaterStatusMessage)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        } else if let reason = updater.unavailableReason, !reason.isEmpty {
-                            Text(reason)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-            }
+            updatesPane
+                .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
+                .tag(SettingsTab.updates)
         }
         .padding(12)
-        .frame(width: 430, height: 320, alignment: .center)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .frame(width: 430, height: 240, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
             loadState()
             updater.automaticallyChecksForUpdates = autoUpdateEnabled
@@ -192,38 +111,103 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
-    private func tabButton(title: String, icon: String, tab: SettingsTab) -> some View {
-        let isSelected = selectedTab == tab
+    private var generalPane: some View {
+        centeredTabContent {
+            VStack(alignment: .leading, spacing: 18) {
+                Toggle("Mouth enabled", isOn: enabledBinding)
+                    .toggleStyle(.checkbox)
 
-        Button {
-            selectedTab = tab
-        } label: {
-            Label(title, systemImage: icon)
-                .font(.subheadline)
-                .lineLimit(1)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .frame(minWidth: 92)
-                .background(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
-                .clipShape(Capsule())
+                Toggle("Start at login", isOn: $launchAtLogin)
+                    .toggleStyle(.checkbox)
+
+                Toggle("Pause music while speaking", isOn: $pauseExternalPlaybackWhileSpeaking)
+                    .toggleStyle(.checkbox)
+            }
         }
-        .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    private func centeredPane<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack {
-            Spacer(minLength: 0)
-            HStack {
-                Spacer(minLength: 0)
-                content()
-                    .frame(width: 320, alignment: .leading)
-                Spacer(minLength: 0)
+    private var speechPane: some View {
+        centeredTabContent {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Picker("Engine", selection: $speechProviderRaw) {
+                        Text(SaySpeech.Provider.macOSSay.displayName).tag(SaySpeech.Provider.macOSSay.rawValue)
+                        Text(SaySpeech.Provider.sag.displayName)
+                            .tag(SaySpeech.Provider.sag.rawValue)
+                            .disabled(!sagInstalled)
+                    }
+
+                    Button {
+                        testVoice()
+                    } label: {
+                        Image(systemName: "play.fill")
+                    }
+                    .disabled(testPlayback != nil)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if sagInstalled, selectedProvider == .sag {
+                    ZStack(alignment: .trailing) {
+                        SecureField("ElevenLabs API key", text: $sagAPIKeyDraft)
+                            .textFieldStyle(.roundedBorder)
+
+                        if sagHasAPIKey {
+                            Button {
+                                sagAPIKeyDraft = ""
+                                persistSAGAPIKeySoon()
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Clear API key")
+                            .padding(.trailing, 8)
+                            .padding(.horizontal, 12)
+                            .background()
+                        }
+                    }
+
+                    if let sagKeyError {
+                        Text(sagKeyError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
             }
-            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private var updatesPane: some View {
+        centeredTabContent {
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle("Check for updates automatically", isOn: $autoUpdateEnabled)
+                    .toggleStyle(.checkbox)
+                    .disabled(!updater.isAvailable)
+
+                Button(isCheckingForUpdates ? "Checking for Updates…" : "Check for Updates…") {
+                    updater.checkForUpdates(nil)
+                }
+                .disabled(!updater.isAvailable || isCheckingForUpdates)
+
+                if !updaterStatusMessage.isEmpty {
+                    Text(updaterStatusMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let reason = updater.unavailableReason, !reason.isEmpty {
+                    Text(reason)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func centeredTabContent<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: 330, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private func loadState() {

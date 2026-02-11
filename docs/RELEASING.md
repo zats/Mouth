@@ -33,6 +33,11 @@ The scripts read version/build from Xcode build settings:
 - `MARKETING_VERSION` (shown as the release version)
 - `CURRENT_PROJECT_VERSION` (build number)
 
+`Scripts/release.sh` defaults to `VERSION_BUMP=minor`, so each release bumps the
+marketing version minor segment (for example `1.0.2 -> 1.1.0`) and increments the
+build number. Override with `VERSION_BUMP=patch|minor|major|none` or set an exact
+`RELEASE_MARKETING_VERSION`.
+
 View what the scripts will use:
 
 ```bash
