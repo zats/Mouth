@@ -3,11 +3,13 @@ import SwiftUI
 
 final class SettingsWindowController: NSWindowController {
     private let model: CodexSessionsViewModel
+    private let updater: UpdaterProviding
 
-    init(model: CodexSessionsViewModel) {
+    init(model: CodexSessionsViewModel, updater: UpdaterProviding) {
         self.model = model
+        self.updater = updater
 
-        let view = SettingsView(model: model)
+        let view = SettingsView(model: model, updater: updater)
         let hosting = NSHostingView(rootView: view)
 
         let window = NSWindow(

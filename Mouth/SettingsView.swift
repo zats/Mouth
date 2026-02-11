@@ -2,9 +2,12 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var model: CodexSessionsViewModel
+    let updater: UpdaterProviding
+
     @AppStorage(SaySpeech.providerDefaultsKey) private var speechProviderRaw: String = SaySpeech.Provider.macOSSay.rawValue
     @AppStorage(CodexVoiceAnnouncer.pauseExternalPlaybackDefaultsKey) private var pauseExternalPlaybackWhileSpeaking: Bool = true
     @AppStorage(LaunchAtLoginManager.defaultsKey) private var launchAtLogin: Bool = false
+    @AppStorage("mouth.auto_update_enabled") private var autoUpdateEnabled: Bool = true
 
     @State private var sagAPIKeyDraft: String = ""
     @State private var sagHasAPIKey: Bool = false
@@ -33,6 +36,19 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            if updater.isAvailable {
+                Toggle("Check for updates automatically", isOn: $autoUpdateEnabled)
+                    .padding(.bottom, 12)
+
+                Button("Check for Updates…") { updater.checkForUpdates(nil) }
+                    .padding(.bottom, 12)
+            } else if let reason = updater.unavailableReason, !reason.isEmpty {
+                Text(reason)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 12)
+            }
+
             Toggle("Start at login", isOn: $launchAtLogin)
                 .padding(.bottom, 12)
 
@@ -89,7 +105,11 @@ struct SettingsView: View {
 
         }
         .padding(20)
-        .onAppear { loadState() }
+        .onAppear {
+            loadState()
+            updater.automaticallyChecksForUpdates = autoUpdateEnabled
+            updater.automaticallyDownloadsUpdates = autoUpdateEnabled
+        }
         .onDisappear {
             saveTask?.cancel()
             saveTask = nil
@@ -99,6 +119,10 @@ struct SettingsView: View {
         }
         .onChange(of: launchAtLogin) { _, enabled in
             LaunchAtLoginManager.setEnabled(enabled)
+        }
+        .onChange(of: autoUpdateEnabled) { _, enabled in
+            updater.automaticallyChecksForUpdates = enabled
+            updater.automaticallyDownloadsUpdates = enabled
         }
     }
 

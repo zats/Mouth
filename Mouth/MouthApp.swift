@@ -5,17 +5,20 @@ import SwiftUI
 @main
 struct MouthApp: App {
     @StateObject private var sessionsModel: CodexSessionsViewModel
+    private let updater: UpdaterProviding
     private let statusItemController: StatusItemController
     private let settingsWindowController: SettingsWindowController
 
     init() {
         LaunchAtLoginManager.applySavedSetting()
 
+        updater = makeUpdaterController()
+
         let engine = MouthEngine()
         let model = CodexSessionsViewModel(engine: engine)
         _sessionsModel = StateObject(wrappedValue: model)
 
-        let settingsWC = SettingsWindowController(model: model)
+        let settingsWC = SettingsWindowController(model: model, updater: updater)
         settingsWindowController = settingsWC
 
         statusItemController = StatusItemController(model: model, stopHandler: {
@@ -31,7 +34,7 @@ struct MouthApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(model: sessionsModel)
+            SettingsView(model: sessionsModel, updater: updater)
         }
     }
 }
