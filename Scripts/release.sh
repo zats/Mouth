@@ -21,6 +21,12 @@ ORIGIN_URL="$(git remote get-url origin 2>/dev/null || true)"
 
 require_clean_worktree
 
+# Releases publish the appcast from a branch (defaults to "main").
+FEED_BRANCH=${FEED_BRANCH:-main}
+CURRENT_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+[[ -n "$CURRENT_BRANCH" ]] || err "Detached HEAD; checkout $FEED_BRANCH before releasing."
+[[ "$CURRENT_BRANCH" == "$FEED_BRANCH" ]] || err "Releasing from '$CURRENT_BRANCH', but FEED_BRANCH is '$FEED_BRANCH'. Checkout '$FEED_BRANCH' (or set FEED_BRANCH)."
+
 # Resolve GitHub slug from origin URL (supports SSH and HTTPS).
 resolve_github_slug() {
   local url="$1"
@@ -38,7 +44,7 @@ resolve_github_slug() {
 GITHUB_SLUG="$(resolve_github_slug "$ORIGIN_URL")"
 
 # Build + notarize + package (zip + dmg + dsym).
-FEED_URL="https://raw.githubusercontent.com/${GITHUB_SLUG}/main/appcast.xml"
+FEED_URL="https://raw.githubusercontent.com/${GITHUB_SLUG}/${FEED_BRANCH}/appcast.xml"
 MOUTH_SPARKLE_FEED_URL="$FEED_URL" "$ROOT/Scripts/sign-and-notarize.sh"
 
 # Load outputs.
@@ -63,9 +69,18 @@ git add appcast.xml
 git commit -m "Update appcast for ${TAG}"
 
 # Tag + push before creating the release so the tag exists remotely.
-git tag -f "$TAG"
-git push origin HEAD
-git push -f origin "$TAG"
+if [[ "${FORCE_TAG:-0}" == "1" ]]; then
+  git tag -f "$TAG"
+else
+  git tag "$TAG"
+fi
+
+git push origin "$FEED_BRANCH"
+if [[ "${FORCE_TAG:-0}" == "1" ]]; then
+  git push -f origin "$TAG"
+else
+  git push origin "$TAG"
+fi
 
 ASSETS=("$ZIP" "$DMG")
 if [[ -n "${DSYM_ZIP:-}" && -f "$DSYM_ZIP" ]]; then
