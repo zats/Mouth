@@ -11,6 +11,7 @@ SCHEME=${SCHEME:-Mouth}
 CONFIGURATION=${CONFIGURATION:-Release}
 
 APP_NAME=${APP_NAME:-Mouth}
+DRY_RUN=${DRY_RUN:-0}
 
 require_trash
 require_cmd git
@@ -61,9 +62,39 @@ set +a
 
 TITLE="${APP_NAME} ${MARKETING_VERSION}"
 
-# Update appcast.xml (served from main via raw.githubusercontent.com).
+APPCAST_OUT="$ROOT/appcast.xml"
+if [[ "$DRY_RUN" == "1" ]]; then
+  DRY_DIR="$(mktemp_dir /tmp/mouth-release-dry.XXXXXX)"
+  APPCAST_OUT="$DRY_DIR/appcast.xml"
+fi
+
+# Update appcast (normally committed to FEED_BRANCH and served from raw.githubusercontent.com).
 SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/${GITHUB_SLUG}/releases/download/${TAG}/" \
+  APPCAST_OUT="$APPCAST_OUT" \
   "$ROOT/Scripts/make_appcast.sh" "$ZIP" "$FEED_URL"
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "DRY_RUN=1: skipping appcast commit/tag/push/release"
+  echo "Would commit appcast to: $ROOT/appcast.xml"
+  echo "Generated appcast at: $APPCAST_OUT"
+  echo "Would tag: $TAG"
+  echo "Would push: origin $FEED_BRANCH and tag $TAG"
+  echo "Would create GitHub release: $TAG"
+  echo "Artifacts prepared in: ${RELEASE_DIR:-unknown}"
+  echo "ZIP: $ZIP"
+  echo "DMG: $DMG"
+  if [[ -n "${DSYM_ZIP:-}" && -f "$DSYM_ZIP" ]]; then
+    echo "DSYM_ZIP: $DSYM_ZIP"
+  fi
+  if [[ -n "${DRY_DIR:-}" ]]; then
+    if [[ "${CLEANUP_RELEASE_DIR:-0}" == "1" ]]; then
+      trash_if_exists "$DRY_DIR"
+    else
+      echo "Dry-run directory: $DRY_DIR"
+    fi
+  fi
+  exit 0
+fi
 
 git add appcast.xml
 git commit -m "Update appcast for ${TAG}"

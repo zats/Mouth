@@ -7,6 +7,7 @@ cd "$ROOT"
 ZIP=${1:?"Usage: $0 Mouth-<ver>.zip [feed_url]"}
 FEED_URL=${2:-""}
 SPARKLE_ACCOUNT=${SPARKLE_ACCOUNT:-com.zats.Mouth}
+APPCAST_OUT=${APPCAST_OUT:-"$ROOT/appcast.xml"}
 if [[ ! -f "$ZIP" ]]; then
   echo "Zip not found: $ZIP" >&2
   exit 1
@@ -35,7 +36,7 @@ fi
   ${SPARKLE_PRIVATE_KEY_FILE:+--ed-key-file "$SPARKLE_PRIVATE_KEY_FILE"} \
   --download-url-prefix "$DOWNLOAD_URL_PREFIX" \
   ${FEED_URL:+--link "$FEED_URL"} \
-  -o "$ROOT/appcast.xml" \
+  -o "$APPCAST_OUT" \
   "$ZIP_DIR"
 
-echo "Appcast updated at: $ROOT/appcast.xml"
+echo "Appcast updated at: $APPCAST_OUT"
