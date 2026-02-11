@@ -9,6 +9,9 @@ struct SettingsView: View {
     @AppStorage(LaunchAtLoginManager.defaultsKey) private var launchAtLogin: Bool = false
     @AppStorage("mouth.auto_update_enabled") private var autoUpdateEnabled: Bool = true
 
+    @State private var updaterStatusMessage: String = ""
+    @State private var isCheckingForUpdates: Bool = false
+
     @State private var sagAPIKeyDraft: String = ""
     @State private var sagHasAPIKey: Bool = false
     @State private var sagKeyError: String?
@@ -36,11 +39,21 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            if updater.isAvailable {
-                Toggle("Check for updates automatically", isOn: $autoUpdateEnabled)
-                    .padding(.bottom, 12)
+            Toggle("Check for updates automatically", isOn: $autoUpdateEnabled)
+                .disabled(!updater.isAvailable)
+                .padding(.bottom, 12)
 
-                Button("Check for Updates…") { updater.checkForUpdates(nil) }
+            Button(isCheckingForUpdates ? "Checking for Updates…" : "Check for Updates…") {
+                Task { @MainActor in
+                    updater.checkForUpdates(nil)
+                }
+            }
+            .disabled(!updater.isAvailable || isCheckingForUpdates)
+
+            if !updaterStatusMessage.isEmpty {
+                Text(updaterStatusMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                     .padding(.bottom, 12)
             } else if let reason = updater.unavailableReason, !reason.isEmpty {
                 Text(reason)
@@ -107,12 +120,28 @@ struct SettingsView: View {
         .padding(20)
         .onAppear {
             loadState()
-            updater.automaticallyChecksForUpdates = autoUpdateEnabled
-            updater.automaticallyDownloadsUpdates = autoUpdateEnabled
+            Task { @MainActor in
+                updater.automaticallyChecksForUpdates = autoUpdateEnabled
+                updater.automaticallyDownloadsUpdates = autoUpdateEnabled
+            }
         }
         .onDisappear {
             saveTask?.cancel()
             saveTask = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .mouthUpdaterStatusChanged)) { note in
+            guard let statusRaw = note.userInfo?["status"] as? String,
+                  let status = MouthUpdaterStatus(rawValue: statusRaw) else { return }
+
+            let message = (note.userInfo?["message"] as? String) ?? ""
+            updaterStatusMessage = message
+
+            switch status {
+            case .checking:
+                isCheckingForUpdates = true
+            default:
+                isCheckingForUpdates = false
+            }
         }
         .onChange(of: sagAPIKeyDraft) { _, _ in
             persistSAGAPIKeySoon()
@@ -121,8 +150,10 @@ struct SettingsView: View {
             LaunchAtLoginManager.setEnabled(enabled)
         }
         .onChange(of: autoUpdateEnabled) { _, enabled in
-            updater.automaticallyChecksForUpdates = enabled
-            updater.automaticallyDownloadsUpdates = enabled
+            Task { @MainActor in
+                updater.automaticallyChecksForUpdates = enabled
+                updater.automaticallyDownloadsUpdates = enabled
+            }
         }
     }
 

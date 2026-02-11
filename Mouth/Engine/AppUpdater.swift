@@ -1,6 +1,23 @@
 import Foundation
 import Security
 
+extension Notification.Name {
+    static let mouthUpdaterStatusChanged = Notification.Name("mouth.updater_status_changed")
+}
+
+enum MouthUpdaterStatus: String {
+    case idle
+    case checking
+    case updateAvailable
+    case upToDate
+    case error
+}
+
+private enum UpdaterStatusKeys {
+    static let status = "status"
+    static let message = "message"
+}
+
 @MainActor
 protocol UpdaterProviding: AnyObject {
     var automaticallyChecksForUpdates: Bool { get set }
@@ -21,17 +38,26 @@ final class DisabledUpdaterController: UpdaterProviding {
         self.unavailableReason = unavailableReason
     }
 
-    func checkForUpdates(_: Any?) {}
+    func checkForUpdates(_: Any?) {
+        NotificationCenter.default.post(
+            name: .mouthUpdaterStatusChanged,
+            object: self,
+            userInfo: [
+                UpdaterStatusKeys.status: MouthUpdaterStatus.error.rawValue,
+                UpdaterStatusKeys.message: unavailableReason ?? "Updates are unavailable in this build.",
+            ]
+        )
+    }
 }
 
 #if canImport(Sparkle)
 import Sparkle
 
 @MainActor
-final class SparkleUpdaterController: NSObject, UpdaterProviding {
+final class SparkleUpdaterController: NSObject, UpdaterProviding, SPUUpdaterDelegate {
     private lazy var controller = SPUStandardUpdaterController(
         startingUpdater: false,
-        updaterDelegate: nil,
+        updaterDelegate: self,
         userDriverDelegate: nil
     )
 
@@ -57,7 +83,60 @@ final class SparkleUpdaterController: NSObject, UpdaterProviding {
     }
 
     func checkForUpdates(_ sender: Any?) {
+        NotificationCenter.default.post(
+            name: .mouthUpdaterStatusChanged,
+            object: self,
+            userInfo: [
+                UpdaterStatusKeys.status: MouthUpdaterStatus.checking.rawValue,
+                UpdaterStatusKeys.message: "Checking for updates…",
+            ]
+        )
         controller.checkForUpdates(sender)
+    }
+
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+        NotificationCenter.default.post(
+            name: .mouthUpdaterStatusChanged,
+            object: self,
+            userInfo: [
+                UpdaterStatusKeys.status: MouthUpdaterStatus.upToDate.rawValue,
+                UpdaterStatusKeys.message: "You're up to date.",
+            ]
+        )
+    }
+
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
+        // Sparkle provides error context even for "no update"; keep messaging simple.
+        NotificationCenter.default.post(
+            name: .mouthUpdaterStatusChanged,
+            object: self,
+            userInfo: [
+                UpdaterStatusKeys.status: MouthUpdaterStatus.upToDate.rawValue,
+                UpdaterStatusKeys.message: "You're up to date.",
+            ]
+        )
+    }
+
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        NotificationCenter.default.post(
+            name: .mouthUpdaterStatusChanged,
+            object: self,
+            userInfo: [
+                UpdaterStatusKeys.status: MouthUpdaterStatus.updateAvailable.rawValue,
+                UpdaterStatusKeys.message: "Update available.",
+            ]
+        )
+    }
+
+    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        NotificationCenter.default.post(
+            name: .mouthUpdaterStatusChanged,
+            object: self,
+            userInfo: [
+                UpdaterStatusKeys.status: MouthUpdaterStatus.error.rawValue,
+                UpdaterStatusKeys.message: error.localizedDescription,
+            ]
+        )
     }
 }
 
