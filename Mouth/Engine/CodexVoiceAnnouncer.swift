@@ -11,12 +11,12 @@ actor CodexVoiceAnnouncer {
     }
 
     private let speaker = SaySpeech()
-    private let sound = AfplaySound()
+    private let sound = AppSound()
 
     private var queue: [Item] = []
     private var runner: Task<Void, Never>?
 
-    private var currentDelimiter: AfplaySound.Playback?
+    private var currentDelimiter: AppSound.Playback?
     private var currentSpeech: SaySpeech.Playback?
     private var currentItem: Item?
 
