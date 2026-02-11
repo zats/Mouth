@@ -1,11 +1,9 @@
-import AVFoundation
+import AudioToolbox
 import Foundation
 
 enum AppSoundError: Error, LocalizedError {
     case failedToLoad(underlying: Error)
     case failedToStart
-    case playbackFailed
-    case decodeFailed(underlying: Error?)
 
     var errorDescription: String? {
         switch self {
@@ -13,13 +11,6 @@ enum AppSoundError: Error, LocalizedError {
             return "Failed to load sound: \(underlying)"
         case .failedToStart:
             return "Failed to start sound playback"
-        case .playbackFailed:
-            return "Sound playback failed"
-        case let .decodeFailed(underlying):
-            if let underlying {
-                return "Sound decode failed: \(underlying)"
-            }
-            return "Sound decode failed"
         }
     }
 }
@@ -48,20 +39,40 @@ private actor PlaybackCompletion {
     }
 }
 
+private final class SoundIDBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sid: SystemSoundID
+
+    init(_ sid: SystemSoundID) {
+        self.sid = sid
+    }
+
+    func disposeIfNeeded() {
+        let toDispose: SystemSoundID? = lock.withLock {
+            guard sid != 0 else { return nil }
+            let v = sid
+            sid = 0
+            return v
+        }
+
+        if let toDispose {
+            AudioServicesDisposeSystemSoundID(toDispose)
+        }
+    }
+}
+
 /// In-process sound playback wrapper (no CLI process spawn).
 final class AppSound {
-    final class Playback: NSObject, AVAudioPlayerDelegate, @unchecked Sendable {
+    final class Playback: @unchecked Sendable {
         let id: UUID
 
-        private let player: AVAudioPlayer
-        private let completion = PlaybackCompletion()
-        private var started = false
+        fileprivate let completion = PlaybackCompletion()
+        private let soundIDBox: SoundIDBox
+        fileprivate var didFinishOrCancel = false
 
-        fileprivate init(id: UUID, player: AVAudioPlayer) {
+        fileprivate init(id: UUID, soundIDBox: SoundIDBox) {
             self.id = id
-            self.player = player
-            super.init()
-            self.player.delegate = self
+            self.soundIDBox = soundIDBox
         }
 
         deinit {
@@ -69,58 +80,48 @@ final class AppSound {
         }
 
         var isRunning: Bool {
-            player.isPlaying
-        }
-
-        fileprivate func start() throws {
-            if started { return }
-            started = true
-
-            player.currentTime = 0
-            player.prepareToPlay()
-            guard player.play() else {
-                Task { await completion.finish(.failure(AppSoundError.failedToStart)) }
-                throw AppSoundError.failedToStart
-            }
+            !didFinishOrCancel
         }
 
         func cancel() {
-            if !player.isPlaying {
-                Task { await completion.finish(.failure(CancellationError())) }
-                return
-            }
-            player.stop()
+            if didFinishOrCancel { return }
+            didFinishOrCancel = true
+
+            soundIDBox.disposeIfNeeded()
+
             Task { await completion.finish(.failure(CancellationError())) }
         }
 
         func wait() async throws {
             try await completion.wait()
         }
-
-        func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-            Task {
-                await completion.finish(flag ? .success(()) : .failure(AppSoundError.playbackFailed))
-            }
-        }
-
-        func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: (any Error)?) {
-            Task {
-                await completion.finish(.failure(AppSoundError.decodeFailed(underlying: error)))
-            }
-        }
     }
 
     func play(fileURL: URL, volume: Float? = nil) throws -> Playback {
-        do {
-            let player = try AVAudioPlayer(contentsOf: fileURL)
-            if let volume {
-                player.volume = volume
-            }
-            let playback = Playback(id: UUID(), player: player)
-            try playback.start()
-            return playback
-        } catch {
-            throw AppSoundError.failedToLoad(underlying: error)
+        _ = volume // SystemSound playback has no per-sound volume control.
+
+        var sid: SystemSoundID = 0
+        let st = AudioServicesCreateSystemSoundID(fileURL as CFURL, &sid)
+        guard st == kAudioServicesNoError, sid != 0 else {
+            throw AppSoundError.failedToLoad(underlying: NSError(domain: NSOSStatusErrorDomain, code: Int(st)))
         }
+
+        let box = SoundIDBox(sid)
+        let playback = Playback(id: UUID(), soundIDBox: box)
+
+        AudioServicesPlaySystemSoundWithCompletion(sid) { [weak playback] in
+            box.disposeIfNeeded()
+            guard let playback else { return }
+
+            if playback.didFinishOrCancel {
+                // Cancel already handled disposal/completion.
+                return
+            }
+
+            playback.didFinishOrCancel = true
+            Task { await playback.completion.finish(.success(())) }
+        }
+
+        return playback
     }
 }
