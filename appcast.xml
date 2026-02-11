@@ -3,6 +3,15 @@
     <channel>
         <title>Mouth</title>
         <item>
+            <title>1.1.0</title>
+            <pubDate>Wed, 11 Feb 2026 10:43:57 -0500</pubDate>
+            <link>https://raw.githubusercontent.com/zats/Mouth/main/appcast.xml</link>
+            <sparkle:version>5</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.2</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/zats/Mouth/releases/download/v1.1.0/Mouth-1.1.0.zip" length="6676708" type="application/octet-stream" sparkle:edSignature="Bs4fK2Vq4KuCN1jApYN1Kg1p3NR1y5m9efT6pNxxDKxZ8EiY9VaAL1C80XB0ktkYie8ghbBgU3mXhj3w08sVDQ=="/>
+        </item>
+        <item>
             <title>1.0.2</title>
             <pubDate>Tue, 10 Feb 2026 22:26:12 -0500</pubDate>
             <link>https://raw.githubusercontent.com/zats/Mouth/main/appcast.xml</link>
@@ -19,15 +28,6 @@
             <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.2</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/zats/Mouth/releases/download/v1.0/Mouth-1.0.zip" length="6679851" type="application/octet-stream" sparkle:edSignature="kLD3muNo9ncmHD4MSxr8addgOGM122Qmps1lHYsOrAbjK2kF3VMdyYHwIc+pPRIHEwV/82XjRbu9PcjsuPK6Bw=="/>
-        </item>
-        <item>
-            <title>1.0</title>
-            <pubDate>Tue, 10 Feb 2026 22:06:09 -0500</pubDate>
-            <link>https://raw.githubusercontent.com/zats/Mouth/main/appcast.xml</link>
-            <sparkle:version>2</sparkle:version>
-            <sparkle:shortVersionString>1.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>26.2</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/zats/Mouth/releases/download/v1.0/Mouth-1.0.zip" length="6679008" type="application/octet-stream"/>
         </item>
     </channel>
 </rss>
