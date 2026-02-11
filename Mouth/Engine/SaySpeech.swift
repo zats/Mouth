@@ -82,9 +82,38 @@ final class SaySpeech {
         let id: UUID
 
         private let process: Process
-        private var lifetimeWriteHandle: FileHandle?
-        private var cleanupURLs: [URL]
+        private let cleanup: Cleanup
         private var terminationTask: Task<Int32, Never>?
+
+        private final class Cleanup: @unchecked Sendable {
+            private nonisolated let lock = NSLock()
+            private nonisolated(unsafe) var lifetimeWriteHandle: FileHandle?
+            private nonisolated(unsafe) var cleanupURLs: [URL]
+
+            init(lifetimeWriteHandle: FileHandle?, cleanupURLs: [URL]) {
+                self.lifetimeWriteHandle = lifetimeWriteHandle
+                self.cleanupURLs = cleanupURLs
+            }
+
+            nonisolated func close() {
+                let handleAndURLs: (FileHandle?, [URL]) = lock.withLock {
+                    let h = lifetimeWriteHandle
+                    lifetimeWriteHandle = nil
+
+                    let urls = cleanupURLs
+                    cleanupURLs.removeAll()
+                    return (h, urls)
+                }
+
+                if let h = handleAndURLs.0 {
+                    try? h.close()
+                }
+
+                for url in handleAndURLs.1 {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+        }
 
         fileprivate init(
             id: UUID,
@@ -94,16 +123,14 @@ final class SaySpeech {
         ) {
             self.id = id
             self.process = process
-            self.lifetimeWriteHandle = lifetimeWriteHandle
-            self.cleanupURLs = cleanupURLs
+            self.cleanup = Cleanup(lifetimeWriteHandle: lifetimeWriteHandle, cleanupURLs: cleanupURLs)
 
             let task = Task {
                 await withCheckedContinuation { (cont: CheckedContinuation<Int32, Never>) in
-                    process.terminationHandler = { [weak self] p in
-                        Task { @MainActor in
-                            self?.closeLifetimeHandle()
-                            cont.resume(returning: p.terminationStatus)
-                        }
+                    let cleanup = self.cleanup
+                    process.terminationHandler = { p in
+                        cleanup.close()
+                        cont.resume(returning: p.terminationStatus)
                     }
                 }
             }
@@ -134,18 +161,7 @@ final class SaySpeech {
         }
 
         private func closeLifetimeHandle() {
-            // Closing this handle causes the wrapper to observe EOF and terminate the child process.
-            if let h = lifetimeWriteHandle {
-                try? h.close()
-                lifetimeWriteHandle = nil
-            }
-
-            if !cleanupURLs.isEmpty {
-                for url in cleanupURLs {
-                    try? FileManager.default.removeItem(at: url)
-                }
-                cleanupURLs.removeAll()
-            }
+            cleanup.close()
         }
     }
 

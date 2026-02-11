@@ -116,7 +116,10 @@ final class StatusItemController: NSObject {
         switch event.type {
         case .rightMouseUp, .rightMouseDown:
             if let menu {
-                statusItem.popUpMenu(menu)
+                // `popUpMenu` is deprecated; temporarily attach menu to the status item and show it.
+                statusItem.menu = menu
+                statusItem.button?.performClick(nil)
+                statusItem.menu = nil
             }
         default:
             handleLeftClick()
