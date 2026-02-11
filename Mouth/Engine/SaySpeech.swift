@@ -100,8 +100,10 @@ final class SaySpeech {
             let task = Task {
                 await withCheckedContinuation { (cont: CheckedContinuation<Int32, Never>) in
                     process.terminationHandler = { [weak self] p in
-                        self?.closeLifetimeHandle()
-                        cont.resume(returning: p.terminationStatus)
+                        Task { @MainActor in
+                            self?.closeLifetimeHandle()
+                            cont.resume(returning: p.terminationStatus)
+                        }
                     }
                 }
             }
