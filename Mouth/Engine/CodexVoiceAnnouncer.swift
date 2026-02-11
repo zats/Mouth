@@ -143,7 +143,7 @@ actor CodexVoiceAnnouncer {
     }
 
     private func delimiterSoundURL() -> URL? {
-        Bundle.main.url(forResource: "codex_delimiter", withExtension: "wav")
+        Bundle.main.url(forResource: "delimiter", withExtension: "wav")
     }
 
     private func setSpeaking(_ speaking: Bool) {

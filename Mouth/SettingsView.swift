@@ -34,13 +34,13 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Toggle("Start at login", isOn: $launchAtLogin)
-                .padding(.bottom, 24)
+                .padding(.bottom, 12)
 
             Toggle("Mouth enabled", isOn: enabledBinding)
                 .padding(.bottom, 12)
 
             Toggle("Pause music while speaking", isOn: $pauseExternalPlaybackWhileSpeaking)
-                .padding(.bottom, 24)
+                .padding(.bottom, 12)
 
             HStack {
                 Picker("Voice engine", selection: $speechProviderRaw) {
