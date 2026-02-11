@@ -33,14 +33,14 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Toggle("Start at login", isOn: $launchAtLogin)
+                .padding(.bottom, 24)
+
             Toggle("Mouth enabled", isOn: enabledBinding)
                 .padding(.bottom, 12)
 
             Toggle("Pause music while speaking", isOn: $pauseExternalPlaybackWhileSpeaking)
-                .padding(.bottom, 12)
-
-            Toggle("Start at login", isOn: $launchAtLogin)
-                .padding(.bottom, 12)
+                .padding(.bottom, 24)
 
             HStack {
                 Picker("Voice engine", selection: $speechProviderRaw) {
@@ -63,6 +63,7 @@ struct SettingsView: View {
             if sagInstalled, selectedProvider == .sag {
                 ZStack(alignment: .trailing) {
                     SecureField("ElevenLabs API key", text: $sagAPIKeyDraft)
+                        .padding(.leading, 12)
 
                     if sagHasAPIKey {
                         Button {
@@ -74,7 +75,8 @@ struct SettingsView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Clear API key")
-                        .padding(.trailing, 6)
+                        .padding(.horizontal, 6)
+                        .background()
                     }
                 }
 
@@ -147,7 +149,19 @@ struct SettingsView: View {
             testPlayback = nil
 
             do {
-                let p = try SaySpeech().play("Hi, I am Mouth")
+                let prompts = [
+                    "Mouth speaking, how can I help?",
+                    "It's me, Mouth. What do you want?",
+                    "Mouth here, unfortunately.",
+                    "The one and only Mouth, at your service.",
+                    "Mouth's in the house, what's your issue?",
+                    "Hi, I'm Mouth. Don't ask how I'm doing.",
+                    "Mouth speaking. Please be patient.",
+                    "You've reached Mouth. This better be good.",
+                    "It's just Mouth. No, I can't fix your WiFi.",
+                    "Mouth here, ready to disappoint you.",
+                ]
+                let p = try SaySpeech().play(prompts.randomElement()!)
                 testPlayback = p
                 try await p.wait()
             } catch {
