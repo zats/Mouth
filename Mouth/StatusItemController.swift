@@ -8,6 +8,7 @@ final class StatusItemController: NSObject {
     private let stopHandler: () -> Void
     private let togglePauseHandler: () -> Void
     private let checkForUpdatesHandler: () -> Void
+    private let updatesAvailability: @MainActor () -> Bool
     private let openSettingsHandler: () -> Void
     private let quitHandler: () -> Void
 
@@ -28,6 +29,7 @@ final class StatusItemController: NSObject {
         stopHandler: @escaping () -> Void,
         togglePauseHandler: @escaping () -> Void,
         checkForUpdatesHandler: @escaping () -> Void,
+        updatesAvailability: @MainActor @escaping () -> Bool,
         openSettingsHandler: @escaping () -> Void,
         quitHandler: @escaping () -> Void
     ) {
@@ -36,6 +38,7 @@ final class StatusItemController: NSObject {
         self.stopHandler = stopHandler
         self.togglePauseHandler = togglePauseHandler
         self.checkForUpdatesHandler = checkForUpdatesHandler
+        self.updatesAvailability = updatesAvailability
         self.openSettingsHandler = openSettingsHandler
         self.quitHandler = quitHandler
         super.init()
@@ -134,8 +137,13 @@ final class StatusItemController: NSObject {
 
         let updates = NSMenuItem(title: "Check for Updates…", action: #selector(didCheckForUpdates), keyEquivalent: "")
         updates.target = self
+        updates.isEnabled = false
         menu.addItem(updates)
         checkForUpdatesItem = updates
+
+        Task { @MainActor [weak updates] in
+            updates?.isEnabled = updatesAvailability()
+        }
 
         menu.addItem(.separator())
 
