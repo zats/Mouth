@@ -33,8 +33,16 @@ final class SettingsWindowController: NSWindowController {
 
     func show() {
         // Make sure the window actually appears and the app comes to front.
-        NSApp.activate(ignoringOtherApps: true)
-        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        if #available(macOS 14.0, *) {
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
+        } else {
+            NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        }
 
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

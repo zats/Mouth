@@ -10,9 +10,7 @@ final class CodexSessionsViewModel: ObservableObject {
     private static let pausedDefaultsKey = "mouth.paused"
 
     func stopSpeakingAndClearQueue() {
-        Task {
-            await announcer.stopAll()
-        }
+        announcer.stopAll()
     }
 
     func togglePaused() {
@@ -23,9 +21,7 @@ final class CodexSessionsViewModel: ObservableObject {
         isPaused = paused
         UserDefaults.standard.set(paused, forKey: Self.pausedDefaultsKey)
         engine.setPaused(paused)
-        Task {
-            await announcer.setPaused(paused)
-        }
+        announcer.setPaused(paused)
     }
 
     init(engine: MouthEngine) {
@@ -35,14 +31,11 @@ final class CodexSessionsViewModel: ObservableObject {
         let paused = UserDefaults.standard.bool(forKey: Self.pausedDefaultsKey)
         isPaused = paused
         engine.setPaused(paused)
-        Task {
-            await announcer.setPaused(paused)
-        }
+        announcer.setPaused(paused)
 
-        engine.onNewAssistantMessage = { [weak self] event in
-            guard let self else { return }
-            Task {
-                await self.announcer.enqueue(event)
+        engine.onNewAssistantMessage = { [weak announcer] event in
+            Task { @MainActor in
+                announcer?.enqueue(event)
             }
         }
 
@@ -50,9 +43,11 @@ final class CodexSessionsViewModel: ObservableObject {
     }
 
     deinit {
+        engine.onNewAssistantMessage = nil
         engine.stop()
-        Task {
-            await announcer.stopAll()
+        let a = announcer
+        Task { @MainActor in
+            a.stopAll()
         }
     }
 }

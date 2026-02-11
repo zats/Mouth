@@ -1,6 +1,7 @@
 import Foundation
 
-actor CodexVoiceAnnouncer {
+@MainActor
+final class CodexVoiceAnnouncer {
     static let pauseExternalPlaybackDefaultsKey = "mouth.pause_external_playback_while_speaking"
 
     struct Item: Hashable, Sendable {
@@ -16,13 +17,14 @@ actor CodexVoiceAnnouncer {
     private var queue: [Item] = []
     private var runner: Task<Void, Never>?
 
-    private var currentDelimiter: AppSound.Playback?
     private var currentSpeech: SaySpeech.Playback?
     private var currentItem: Item?
 
     private var didPauseExternalPlayback = false
     private var isSpeaking = false
     private var paused = false
+
+    init() {}
 
     private func shouldPauseExternalPlaybackWhileSpeaking() -> Bool {
         let ud = UserDefaults.standard
@@ -46,15 +48,13 @@ actor CodexVoiceAnnouncer {
 
         if runner == nil {
             runner = Task {
-                await run()
+                await self.run()
             }
         }
     }
 
     func stopAll() {
         queue.removeAll()
-        currentDelimiter?.cancel()
-        currentDelimiter = nil
         currentSpeech?.cancel()
         currentSpeech = nil
         runner?.cancel()
@@ -123,13 +123,11 @@ actor CodexVoiceAnnouncer {
             if let url = delimiterSoundURL() {
                 do {
                     let p = try sound.play(fileURL: url)
-                    currentDelimiter = p
                     try await p.wait()
                 } catch {
                     // Non-fatal; continue to speech.
                 }
             }
-            currentDelimiter = nil
 
             do {
                 let p = try speaker.play(item.text)

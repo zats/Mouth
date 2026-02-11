@@ -1,16 +1,13 @@
-import AVFoundation
+import AudioToolbox
 import Foundation
 
 enum AppSoundError: Error, LocalizedError {
     case failedToLoad(underlying: Error)
-    case failedToStart
 
     var errorDescription: String? {
         switch self {
         case let .failedToLoad(underlying):
             return "Failed to load sound: \(underlying)"
-        case .failedToStart:
-            return "Failed to start sound playback"
         }
     }
 }
@@ -41,68 +38,65 @@ private actor PlaybackCompletion {
 
 /// In-process sound playback wrapper (no CLI process spawn).
 ///
-/// Uses `AVAudioPlayer` and a lightweight poller to avoid delegate/lifetime issues.
+/// Uses `AudioToolbox` system sound IDs and caches the loaded sound to avoid
+/// per-play disposal timing issues.
 final class AppSound {
     final class Playback: @unchecked Sendable {
-        let id: UUID
-
         private let completion = PlaybackCompletion()
-        private var player: AVAudioPlayer?
-        private var monitorTask: Task<Void, Never>?
 
-        fileprivate init(id: UUID, player: AVAudioPlayer) {
-            self.id = id
-            self.player = player
-
-            monitorTask = Task { [weak self] in
-                guard let self else { return }
-                while !Task.isCancelled {
-                    let stillPlaying = self.player?.isPlaying ?? false
-                    if !stillPlaying { break }
-                    try? await Task.sleep(nanoseconds: 15_000_000)
-                }
-
-                await self.completion.finish(.success(()))
-            }
-        }
-
-        deinit {
-            cancel()
-        }
-
-        var isRunning: Bool {
-            player?.isPlaying ?? false
+        func finish(_ result: Result<Void, Error>) async {
+            await completion.finish(result)
         }
 
         func cancel() {
-            monitorTask?.cancel()
-            monitorTask = nil
-
-            player?.stop()
-            player = nil
-
-            Task { await completion.finish(.failure(CancellationError())) }
+            Task {
+                await completion.finish(.failure(CancellationError()))
+            }
         }
 
         func wait() async throws {
-            try await completion.wait()
+            try await withTaskCancellationHandler {
+                try await completion.wait()
+            } onCancel: {
+                Task {
+                    await completion.finish(.failure(CancellationError()))
+                }
+            }
         }
     }
 
-    func play(fileURL: URL, volume: Float? = nil) throws -> Playback {
-        do {
-            let player = try AVAudioPlayer(contentsOf: fileURL)
-            if let volume {
-                player.volume = volume
-            }
-            player.prepareToPlay()
-            guard player.play() else {
-                throw AppSoundError.failedToStart
-            }
-            return Playback(id: UUID(), player: player)
-        } catch {
-            throw AppSoundError.failedToLoad(underlying: error)
+    private var cachedURL: URL?
+    private var cachedSoundID: SystemSoundID = 0
+
+    deinit {
+        if cachedSoundID != 0 {
+            AudioServicesDisposeSystemSoundID(cachedSoundID)
         }
+    }
+
+    func play(fileURL: URL) throws -> Playback {
+        if cachedURL != fileURL || cachedSoundID == 0 {
+            if cachedSoundID != 0 {
+                AudioServicesDisposeSystemSoundID(cachedSoundID)
+                cachedSoundID = 0
+            }
+
+            var sid: SystemSoundID = 0
+            let st = AudioServicesCreateSystemSoundID(fileURL as CFURL, &sid)
+            guard st == kAudioServicesNoError, sid != 0 else {
+                throw AppSoundError.failedToLoad(underlying: NSError(domain: NSOSStatusErrorDomain, code: Int(st)))
+            }
+
+            cachedURL = fileURL
+            cachedSoundID = sid
+        }
+
+        let playback = Playback()
+        AudioServicesPlaySystemSoundWithCompletion(cachedSoundID) {
+            Task {
+                await playback.finish(.success(()))
+            }
+        }
+        return playback
     }
 }
-
