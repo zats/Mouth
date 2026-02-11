@@ -6,6 +6,22 @@ err() {
   exit 1
 }
 
+log_ts() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+log_info() {
+  echo "[INFO $(log_ts)] $*"
+}
+
+log_step() {
+  echo "[STEP $(log_ts)] $*"
+}
+
+log_done() {
+  echo "[DONE $(log_ts)] $*"
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || err "Missing required command: $1"
 }
@@ -44,26 +60,30 @@ mktemp_dir() {
 run_logged() {
   # Usage: run_logged <logfile> <command...>
   local log="$1"; shift
+  local cmd=("$@")
+  log_step "Running: ${cmd[*]}"
+  log_info "Log: $log"
   set +e
-  "$@" >"$log" 2>&1
-  local status=$?
+  "${cmd[@]}" >"$log" 2>&1
+  local rc=$?
   set -e
-  if [[ $status -ne 0 ]]; then
-    echo "Command failed (exit $status): $*" >&2
+  if [[ $rc -ne 0 ]]; then
+    echo "Command failed (exit $rc): ${cmd[*]}" >&2
     echo "Log: $log" >&2
     # Print a bounded set of failure markers from the *full* log.
     rg -n "(^|\\s)(error:|fatal error:|clang: error:|Swift\\.CompilerError|Ld .* failed|Command .* failed)" -S "$log" >&2 || true
-    exit $status
+    exit $rc
   fi
   # Even successful builds can hide earlier errors in some setups; treat error markers as failure.
   local markers
   markers="$(rg -n "(^|\\s)(error:|fatal error:|clang: error:|Swift\\.CompilerError|Ld .* failed|Command .* failed)" -S "$log" || true)"
   if [[ -n "$markers" ]]; then
-    echo "Command succeeded but error markers were found in log (unexpected): $*" >&2
+    echo "Command succeeded but error markers were found in log (unexpected): ${cmd[*]}" >&2
     echo "Log: $log" >&2
     echo "$markers" >&2
     exit 1
   fi
+  log_done "Completed: ${cmd[*]}"
 }
 
 xcode_show_build_settings() {

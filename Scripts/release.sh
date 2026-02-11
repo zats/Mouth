@@ -18,6 +18,8 @@ DRY_RUN_APPLY_VERSION_BUMP=${DRY_RUN_APPLY_VERSION_BUMP:-0}
 RELEASE_MARKETING_VERSION=${RELEASE_MARKETING_VERSION:-}
 RELEASE_BUILD_NUMBER=${RELEASE_BUILD_NUMBER:-}
 
+log_info "Release started (project=$PROJECT scheme=$SCHEME config=$CONFIGURATION dry_run=$DRY_RUN)"
+log_step "Preflight checks"
 require_trash
 require_cmd git
 require_cmd gh
@@ -33,6 +35,7 @@ FEED_BRANCH=${FEED_BRANCH:-main}
 CURRENT_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
 [[ -n "$CURRENT_BRANCH" ]] || err "Detached HEAD; checkout $FEED_BRANCH before releasing."
 [[ "$CURRENT_BRANCH" == "$FEED_BRANCH" ]] || err "Releasing from '$CURRENT_BRANCH', but FEED_BRANCH is '$FEED_BRANCH'. Checkout '$FEED_BRANCH' (or set FEED_BRANCH)."
+log_done "Preflight checks passed (branch=$CURRENT_BRANCH)"
 
 # Resolve GitHub slug from origin URL (supports SSH and HTTPS).
 resolve_github_slug() {
@@ -49,6 +52,7 @@ resolve_github_slug() {
 }
 
 GITHUB_SLUG="$(resolve_github_slug "$ORIGIN_URL")"
+log_info "Using repository: $GITHUB_SLUG"
 
 bump_semver() {
   local version="$1"
@@ -111,8 +115,11 @@ if [[ -n "$RELEASE_MARKETING_VERSION" ]]; then
 else
   TARGET_MARKETING_VERSION="$(bump_semver "$CURRENT_MARKETING_VERSION" "$VERSION_BUMP")"
 fi
+log_info "Current version: $CURRENT_MARKETING_VERSION ($CURRENT_BUILD_NUMBER)"
+log_info "Target version: $TARGET_MARKETING_VERSION (${RELEASE_BUILD_NUMBER:-auto})"
 
 if [[ "$DRY_RUN" == "1" && "$DRY_RUN_APPLY_VERSION_BUMP" != "1" ]]; then
+  log_step "Version bump planning (dry run)"
   echo "DRY_RUN=1: skipping version bump"
   if [[ "$TARGET_MARKETING_VERSION" != "$CURRENT_MARKETING_VERSION" ]]; then
     echo "Would set MARKETING_VERSION: $CURRENT_MARKETING_VERSION -> $TARGET_MARKETING_VERSION"
@@ -122,7 +129,9 @@ if [[ "$DRY_RUN" == "1" && "$DRY_RUN_APPLY_VERSION_BUMP" != "1" ]]; then
   else
     echo "Would increment CURRENT_PROJECT_VERSION from: $CURRENT_BUILD_NUMBER"
   fi
+  log_done "Version bump planning complete (dry run)"
 else
+  log_step "Applying version bump"
   if [[ "$TARGET_MARKETING_VERSION" != "$CURRENT_MARKETING_VERSION" ]]; then
     xcrun agvtool new-marketing-version "$TARGET_MARKETING_VERSION" >/dev/null
   fi
@@ -146,11 +155,14 @@ else
 
   git add -A
   git commit -m "Bump version to ${UPDATED_MARKETING_VERSION} (${UPDATED_BUILD_NUMBER})"
+  log_done "Version bump committed: ${UPDATED_MARKETING_VERSION} (${UPDATED_BUILD_NUMBER})"
 fi
 
 # Build + notarize + package (zip + dmg + dsym).
 FEED_URL="https://raw.githubusercontent.com/${GITHUB_SLUG}/${FEED_BRANCH}/appcast.xml"
+log_step "Building, signing, notarizing, and packaging artifacts"
 MOUTH_SPARKLE_FEED_URL="$FEED_URL" CLEANUP_RELEASE_DIR=0 "$ROOT/Scripts/sign-and-notarize.sh"
+log_done "Artifacts prepared"
 
 # Load outputs.
 OUT_ENV="/tmp/mouth-last-release-outputs.env"
@@ -163,6 +175,7 @@ set +a
 [[ -n "${TAG:-}" ]] || err "Missing TAG in $OUT_ENV"
 [[ -n "${ZIP:-}" && -f "$ZIP" ]] || err "Missing ZIP in $OUT_ENV"
 [[ -n "${DMG:-}" && -f "$DMG" ]] || err "Missing DMG in $OUT_ENV"
+log_info "Artifacts: ZIP=$ZIP DMG=$DMG"
 
 TITLE="${APP_NAME} ${MARKETING_VERSION}"
 
@@ -173,11 +186,14 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 # Update appcast (normally committed to FEED_BRANCH and served from raw.githubusercontent.com).
+log_step "Generating appcast"
 SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/${GITHUB_SLUG}/releases/download/${TAG}/" \
   APPCAST_OUT="$APPCAST_OUT" \
   "$ROOT/Scripts/make_appcast.sh" "$ZIP" "$FEED_URL"
+log_done "Appcast generated at $APPCAST_OUT"
 
 if [[ "$DRY_RUN" == "1" ]]; then
+  log_step "Dry-run summary"
   echo "DRY_RUN=1: skipping appcast commit/tag/push/release"
   echo "Would commit appcast to: $ROOT/appcast.xml"
   echo "Generated appcast at: $APPCAST_OUT"
@@ -200,25 +216,32 @@ if [[ "$DRY_RUN" == "1" ]]; then
       echo "Dry-run directory: $DRY_DIR"
     fi
   fi
+  log_done "Dry run complete"
   exit 0
 fi
 
+log_step "Committing appcast update"
 git add appcast.xml
 git commit -m "Update appcast for ${TAG}"
+log_done "Appcast committed for ${TAG}"
 
 # Tag + push before creating the release so the tag exists remotely.
+log_step "Creating git tag ${TAG}"
 if [[ "${FORCE_TAG:-0}" == "1" ]]; then
   git tag -f "$TAG"
 else
   git tag "$TAG"
 fi
+log_done "Tag ready: $TAG"
 
+log_step "Pushing branch ${FEED_BRANCH} and tag ${TAG}"
 git push origin "$FEED_BRANCH"
 if [[ "${FORCE_TAG:-0}" == "1" ]]; then
   git push -f origin "$TAG"
 else
   git push origin "$TAG"
 fi
+log_done "Git push complete"
 
 ASSETS=("$ZIP" "$DMG")
 if [[ -n "${DSYM_ZIP:-}" && -f "$DSYM_ZIP" ]]; then
@@ -229,6 +252,7 @@ gh release create "$TAG" "${ASSETS[@]}" \
   --title "$TITLE" \
   --generate-notes
 
+log_done "GitHub release created for $TAG"
 echo "GitHub release created for $TAG"
 echo "Assets uploaded from: ${RELEASE_DIR:-unknown}"
 

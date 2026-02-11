@@ -30,6 +30,8 @@ require_cmd spctl
 require_cmd xattr
 require_cmd git
 
+log_info "Sign/notarize started (project=$PROJECT scheme=$SCHEME config=$CONFIGURATION)"
+
 TMPDIR="$(mktemp_dir /tmp/mouth-release.XXXXXX)"
 LOG_DIR="$TMPDIR/logs"
 mkdir -p "$LOG_DIR"
@@ -48,6 +50,7 @@ cleanup() {
 trap cleanup EXIT
 
 SETTINGS="$TMPDIR/build-settings.txt"
+log_step "Resolving build settings"
 xcode_show_build_settings "$PROJECT" "$SCHEME" "$CONFIGURATION" >"$SETTINGS"
 
 MARKETING_VERSION="$(xcrun agvtool what-marketing-version -terse1 2>/dev/null | tr -d '\r' | tail -n 1 | tr -d '[:space:]')"
@@ -67,6 +70,7 @@ PRODUCT_BUNDLE_IDENTIFIER="$(extract_setting "$SETTINGS" PRODUCT_BUNDLE_IDENTIFI
 [[ -n "$PRODUCT_BUNDLE_IDENTIFIER" ]] || err "Could not extract PRODUCT_BUNDLE_IDENTIFIER."
 
 TAG="${TAG_PREFIX}${MARKETING_VERSION}"
+log_done "Resolved version $MARKETING_VERSION ($BUILD_NUMBER), tag $TAG"
 
 ARCHIVE="$TMPDIR/${SCHEME}.xcarchive"
 EXPORT_DIR="$TMPDIR/export"
@@ -100,7 +104,9 @@ if [[ -n "${MOUTH_SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
   ARCHIVE_ARGS+=("MOUTH_SPARKLE_PUBLIC_ED_KEY=${MOUTH_SPARKLE_PUBLIC_ED_KEY}")
 fi
 ARCHIVE_ARGS+=(archive)
+log_step "Archiving app"
 run_logged "$LOG_DIR/xcodebuild-archive.log" "${ARCHIVE_ARGS[@]}"
+log_done "Archive created: $ARCHIVE"
 
 EXPORT_ARGS=(
   xcodebuild -exportArchive
@@ -114,13 +120,17 @@ fi
 if [[ -n "${MOUTH_SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
   EXPORT_ARGS+=("MOUTH_SPARKLE_PUBLIC_ED_KEY=${MOUTH_SPARKLE_PUBLIC_ED_KEY}")
 fi
+log_step "Exporting archive"
 run_logged "$LOG_DIR/xcodebuild-export.log" "${EXPORT_ARGS[@]}"
+log_done "Export complete: $EXPORT_DIR"
 
 APP_PATH="$(find "$EXPORT_DIR" -maxdepth 1 -name '*.app' -print -quit)"
 [[ -n "$APP_PATH" ]] || err "Export did not produce an .app at $EXPORT_DIR"
 
 # Basic signing sanity before notarization.
+log_step "Verifying app signature"
 codesign --verify --deep --strict --verbose=4 "$APP_PATH" >/dev/null 2>&1 || err "codesign verification failed for exported app."
+log_done "Signature verified: $APP_PATH"
 
 # Ensure no extended attributes leak into archives (can create AppleDouble files later).
 xattr -cr "$APP_PATH" || true
@@ -129,7 +139,9 @@ while IFS= read -r -d '' f; do
 done < <(find "$APP_PATH" -name '._*' -print0 2>/dev/null || true)
 
 NOTARIZE_ZIP="$TMPDIR/${APP_NAME}Notarize.zip"
+log_step "Creating notarization zip"
 ditto --norsrc -c -k --keepParent "$APP_PATH" "$NOTARIZE_ZIP"
+log_done "Notarization zip ready: $NOTARIZE_ZIP"
 
 NOTARY_ARGS=()
 if [[ "$SKIP_NOTARIZATION" != "1" ]]; then
@@ -152,30 +164,40 @@ if [[ "$SKIP_NOTARIZATION" != "1" ]]; then
     fi
   fi
 
+  log_step "Submitting app zip for notarization (this can take several minutes)"
   run_logged "$LOG_DIR/notary-submit-appzip.log" \
     xcrun notarytool submit "$NOTARIZE_ZIP" --wait "${NOTARY_ARGS[@]}"
+  log_done "App zip notarization accepted"
 
+  log_step "Stapling notarization ticket to app"
   run_logged "$LOG_DIR/staple-app.log" \
     xcrun stapler staple "$APP_PATH"
 
+  log_step "Validating app stapling"
   run_logged "$LOG_DIR/staple-validate-app.log" \
     xcrun stapler validate "$APP_PATH"
 
+  log_step "Assessing app with spctl"
   run_logged "$LOG_DIR/spctl-app.log" \
     spctl -a -t exec -vv "$APP_PATH"
+  log_done "App notarization checks complete"
 else
   echo "SKIP_NOTARIZATION=1: skipping notarytool + stapler + spctl checks"
 fi
 
 ZIP_OUT="$TMPDIR/${APP_NAME}-${MARKETING_VERSION}.zip"
+log_step "Creating release zip"
 ditto --norsrc -c -k --keepParent "$APP_PATH" "$ZIP_OUT"
+log_done "Release zip ready: $ZIP_OUT"
 
 # Package dSYM from the xcarchive.
 DSYM_DIR="$ARCHIVE/dSYMs"
 DSYM_PATH="$(find "$DSYM_DIR" -maxdepth 1 -name '*.dSYM' -print -quit 2>/dev/null || true)"
 DSYM_ZIP_OUT="$TMPDIR/${APP_NAME}-${MARKETING_VERSION}.dSYM.zip"
 if [[ -n "$DSYM_PATH" ]]; then
+  log_step "Packaging dSYM"
   ditto --norsrc -c -k --keepParent "$DSYM_PATH" "$DSYM_ZIP_OUT"
+  log_done "dSYM zip ready: $DSYM_ZIP_OUT"
 fi
 
 # DMG: stage app + /Applications symlink.
@@ -185,20 +207,28 @@ ditto "$APP_PATH" "$DMG_STAGE/${APP_NAME}.app"
 ln -s /Applications "$DMG_STAGE/Applications"
 
 DMG_OUT="$TMPDIR/${APP_NAME}-${MARKETING_VERSION}.dmg"
+log_step "Building DMG"
 hdiutil create -fs HFS+ -volname "$APP_NAME" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG_OUT" >/dev/null
+log_done "DMG ready: $DMG_OUT"
 
 if [[ "$NOTARIZE_DMG" == "1" ]]; then
   if [[ -n "${DMG_SIGN_IDENTITY:-}" ]]; then
+    log_step "Signing DMG"
     codesign --force --timestamp --sign "$DMG_SIGN_IDENTITY" "$DMG_OUT"
+    log_done "DMG signed"
   fi
 
   if [[ "$SKIP_NOTARIZATION" != "1" ]]; then
+    log_step "Submitting DMG for notarization (this can take several minutes)"
     run_logged "$LOG_DIR/notary-submit-dmg.log" \
       xcrun notarytool submit "$DMG_OUT" --wait "${NOTARY_ARGS[@]}"
+    log_done "DMG notarization accepted"
 
+    log_step "Stapling notarization ticket to DMG"
     run_logged "$LOG_DIR/staple-dmg.log" \
       xcrun stapler staple "$DMG_OUT"
 
+    log_step "Validating DMG stapling"
     run_logged "$LOG_DIR/staple-validate-dmg.log" \
       xcrun stapler validate "$DMG_OUT"
 
@@ -220,6 +250,7 @@ if [[ "$NOTARIZE_DMG" == "1" ]]; then
         exit $SPCTL_DMG_STATUS
       fi
     fi
+    log_done "DMG notarization checks complete"
   fi
 fi
 
@@ -239,5 +270,6 @@ EOF
 
 cp "$OUT_ENV" /tmp/mouth-last-release-outputs.env
 
+log_done "Sign/notarize finished"
 echo "Release artifacts prepared in: $TMPDIR"
 echo "Outputs file: $OUT_ENV"
