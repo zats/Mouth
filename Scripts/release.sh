@@ -87,6 +87,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if [[ -n "${DSYM_ZIP:-}" && -f "$DSYM_ZIP" ]]; then
     echo "DSYM_ZIP: $DSYM_ZIP"
   fi
+  if [[ "$REQUEST_CLEANUP_RELEASE_DIR" == "1" && -n "${RELEASE_DIR:-}" ]]; then
+    trash_if_exists "$RELEASE_DIR"
+  fi
   if [[ -n "${DRY_DIR:-}" ]]; then
     if [[ "$REQUEST_CLEANUP_RELEASE_DIR" == "1" ]]; then
       trash_if_exists "$DRY_DIR"
