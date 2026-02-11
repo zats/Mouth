@@ -50,8 +50,14 @@ trap cleanup EXIT
 SETTINGS="$TMPDIR/build-settings.txt"
 xcode_show_build_settings "$PROJECT" "$SCHEME" "$CONFIGURATION" >"$SETTINGS"
 
-MARKETING_VERSION="$(extract_setting "$SETTINGS" MARKETING_VERSION)"
-BUILD_NUMBER="$(extract_setting "$SETTINGS" CURRENT_PROJECT_VERSION)"
+MARKETING_VERSION="$(xcrun agvtool what-marketing-version -terse1 2>/dev/null | tr -d '\r' | tail -n 1 | tr -d '[:space:]')"
+BUILD_NUMBER="$(xcrun agvtool what-version -terse 2>/dev/null | tr -d '\r' | tail -n 1 | tr -d '[:space:]')"
+if [[ -z "$MARKETING_VERSION" ]]; then
+  MARKETING_VERSION="$(extract_setting "$SETTINGS" MARKETING_VERSION)"
+fi
+if [[ -z "$BUILD_NUMBER" ]]; then
+  BUILD_NUMBER="$(extract_setting "$SETTINGS" CURRENT_PROJECT_VERSION)"
+fi
 TEAM_ID="$(extract_setting "$SETTINGS" DEVELOPMENT_TEAM)"
 PRODUCT_BUNDLE_IDENTIFIER="$(extract_setting "$SETTINGS" PRODUCT_BUNDLE_IDENTIFIER)"
 

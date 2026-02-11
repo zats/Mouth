@@ -94,10 +94,14 @@ cleanup_settings_dir() {
 }
 trap cleanup_settings_dir EXIT
 
-CURRENT_SETTINGS="$SETTINGS_TMP_DIR/current-build-settings.txt"
-xcode_show_build_settings "$PROJECT" "$SCHEME" "$CONFIGURATION" >"$CURRENT_SETTINGS"
-CURRENT_MARKETING_VERSION="$(extract_setting "$CURRENT_SETTINGS" MARKETING_VERSION)"
-CURRENT_BUILD_NUMBER="$(extract_setting "$CURRENT_SETTINGS" CURRENT_PROJECT_VERSION)"
+CURRENT_MARKETING_VERSION="$(xcrun agvtool what-marketing-version -terse1 2>/dev/null | tr -d '\r' | tail -n 1 | tr -d '[:space:]')"
+CURRENT_BUILD_NUMBER="$(xcrun agvtool what-version -terse 2>/dev/null | tr -d '\r' | tail -n 1 | tr -d '[:space:]')"
+if [[ -z "$CURRENT_MARKETING_VERSION" || -z "$CURRENT_BUILD_NUMBER" ]]; then
+  CURRENT_SETTINGS="$SETTINGS_TMP_DIR/current-build-settings.txt"
+  xcode_show_build_settings "$PROJECT" "$SCHEME" "$CONFIGURATION" >"$CURRENT_SETTINGS"
+  [[ -n "$CURRENT_MARKETING_VERSION" ]] || CURRENT_MARKETING_VERSION="$(extract_setting "$CURRENT_SETTINGS" MARKETING_VERSION)"
+  [[ -n "$CURRENT_BUILD_NUMBER" ]] || CURRENT_BUILD_NUMBER="$(extract_setting "$CURRENT_SETTINGS" CURRENT_PROJECT_VERSION)"
+fi
 [[ -n "$CURRENT_MARKETING_VERSION" ]] || err "Could not extract MARKETING_VERSION before bump."
 [[ -n "$CURRENT_BUILD_NUMBER" ]] || err "Could not extract CURRENT_PROJECT_VERSION before bump."
 
@@ -129,10 +133,14 @@ else
     xcrun agvtool next-version -all >/dev/null
   fi
 
-  UPDATED_SETTINGS="$SETTINGS_TMP_DIR/updated-build-settings.txt"
-  xcode_show_build_settings "$PROJECT" "$SCHEME" "$CONFIGURATION" >"$UPDATED_SETTINGS"
-  UPDATED_MARKETING_VERSION="$(extract_setting "$UPDATED_SETTINGS" MARKETING_VERSION)"
-  UPDATED_BUILD_NUMBER="$(extract_setting "$UPDATED_SETTINGS" CURRENT_PROJECT_VERSION)"
+  UPDATED_MARKETING_VERSION="$(xcrun agvtool what-marketing-version -terse1 2>/dev/null | tr -d '\r' | tail -n 1 | tr -d '[:space:]')"
+  UPDATED_BUILD_NUMBER="$(xcrun agvtool what-version -terse 2>/dev/null | tr -d '\r' | tail -n 1 | tr -d '[:space:]')"
+  if [[ -z "$UPDATED_MARKETING_VERSION" || -z "$UPDATED_BUILD_NUMBER" ]]; then
+    UPDATED_SETTINGS="$SETTINGS_TMP_DIR/updated-build-settings.txt"
+    xcode_show_build_settings "$PROJECT" "$SCHEME" "$CONFIGURATION" >"$UPDATED_SETTINGS"
+    [[ -n "$UPDATED_MARKETING_VERSION" ]] || UPDATED_MARKETING_VERSION="$(extract_setting "$UPDATED_SETTINGS" MARKETING_VERSION)"
+    [[ -n "$UPDATED_BUILD_NUMBER" ]] || UPDATED_BUILD_NUMBER="$(extract_setting "$UPDATED_SETTINGS" CURRENT_PROJECT_VERSION)"
+  fi
   [[ -n "$UPDATED_MARKETING_VERSION" ]] || err "Could not extract updated MARKETING_VERSION."
   [[ -n "$UPDATED_BUILD_NUMBER" ]] || err "Could not extract updated CURRENT_PROJECT_VERSION."
 
