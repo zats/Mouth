@@ -81,22 +81,34 @@ cat >"$EXPORT_OPTS" <<PLIST
 </plist>
 PLIST
 
-run_logged "$LOG_DIR/xcodebuild-archive.log" \
-  xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIGURATION" \
-  -destination 'generic/platform=macOS' \
-  -archivePath "$ARCHIVE" \
-  SKIP_INSTALL=NO \
-  MOUTH_SPARKLE_FEED_URL="${MOUTH_SPARKLE_FEED_URL:-}" \
-  MOUTH_SPARKLE_PUBLIC_ED_KEY="${MOUTH_SPARKLE_PUBLIC_ED_KEY:-}" \
-  archive
+ARCHIVE_ARGS=(
+  xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIGURATION"
+  -destination 'generic/platform=macOS'
+  -archivePath "$ARCHIVE"
+  SKIP_INSTALL=NO
+)
+if [[ -n "${MOUTH_SPARKLE_FEED_URL:-}" ]]; then
+  ARCHIVE_ARGS+=("MOUTH_SPARKLE_FEED_URL=${MOUTH_SPARKLE_FEED_URL}")
+fi
+if [[ -n "${MOUTH_SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
+  ARCHIVE_ARGS+=("MOUTH_SPARKLE_PUBLIC_ED_KEY=${MOUTH_SPARKLE_PUBLIC_ED_KEY}")
+fi
+ARCHIVE_ARGS+=(archive)
+run_logged "$LOG_DIR/xcodebuild-archive.log" "${ARCHIVE_ARGS[@]}"
 
-run_logged "$LOG_DIR/xcodebuild-export.log" \
-  xcodebuild -exportArchive \
-  -archivePath "$ARCHIVE" \
-  -exportOptionsPlist "$EXPORT_OPTS" \
-  -exportPath "$EXPORT_DIR" \
-  MOUTH_SPARKLE_FEED_URL="${MOUTH_SPARKLE_FEED_URL:-}" \
-  MOUTH_SPARKLE_PUBLIC_ED_KEY="${MOUTH_SPARKLE_PUBLIC_ED_KEY:-}"
+EXPORT_ARGS=(
+  xcodebuild -exportArchive
+  -archivePath "$ARCHIVE"
+  -exportOptionsPlist "$EXPORT_OPTS"
+  -exportPath "$EXPORT_DIR"
+)
+if [[ -n "${MOUTH_SPARKLE_FEED_URL:-}" ]]; then
+  EXPORT_ARGS+=("MOUTH_SPARKLE_FEED_URL=${MOUTH_SPARKLE_FEED_URL}")
+fi
+if [[ -n "${MOUTH_SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
+  EXPORT_ARGS+=("MOUTH_SPARKLE_PUBLIC_ED_KEY=${MOUTH_SPARKLE_PUBLIC_ED_KEY}")
+fi
+run_logged "$LOG_DIR/xcodebuild-export.log" "${EXPORT_ARGS[@]}"
 
 APP_PATH="$(find "$EXPORT_DIR" -maxdepth 1 -name '*.app' -print -quit)"
 [[ -n "$APP_PATH" ]] || err "Export did not produce an .app at $EXPORT_DIR"
