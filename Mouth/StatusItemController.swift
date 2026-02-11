@@ -7,6 +7,7 @@ final class StatusItemController: NSObject {
     private let model: CodexSessionsViewModel
     private let stopHandler: () -> Void
     private let togglePauseHandler: () -> Void
+    private let checkForUpdatesHandler: () -> Void
     private let openSettingsHandler: () -> Void
     private let quitHandler: () -> Void
 
@@ -15,6 +16,7 @@ final class StatusItemController: NSObject {
     private var cancellables = Set<AnyCancellable>()
     private var menu: NSMenu?
     private weak var pauseItem: NSMenuItem?
+    private weak var checkForUpdatesItem: NSMenuItem?
     private var currentSpeakingSessionID: String?
     private var isPaused = false
     private var isSpeaking = false
@@ -25,6 +27,7 @@ final class StatusItemController: NSObject {
         model: CodexSessionsViewModel,
         stopHandler: @escaping () -> Void,
         togglePauseHandler: @escaping () -> Void,
+        checkForUpdatesHandler: @escaping () -> Void,
         openSettingsHandler: @escaping () -> Void,
         quitHandler: @escaping () -> Void
     ) {
@@ -32,6 +35,7 @@ final class StatusItemController: NSObject {
         self.model = model
         self.stopHandler = stopHandler
         self.togglePauseHandler = togglePauseHandler
+        self.checkForUpdatesHandler = checkForUpdatesHandler
         self.openSettingsHandler = openSettingsHandler
         self.quitHandler = quitHandler
         super.init()
@@ -128,6 +132,11 @@ final class StatusItemController: NSObject {
         settings.target = self
         menu.addItem(settings)
 
+        let updates = NSMenuItem(title: "Check for Updates…", action: #selector(didCheckForUpdates), keyEquivalent: "")
+        updates.target = self
+        menu.addItem(updates)
+        checkForUpdatesItem = updates
+
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "Quit", action: #selector(didQuit), keyEquivalent: "q")
@@ -161,6 +170,10 @@ final class StatusItemController: NSObject {
 
     @objc private func didOpenSettings() {
         openSettingsHandler()
+    }
+
+    @objc private func didCheckForUpdates() {
+        checkForUpdatesHandler()
     }
 
     @objc private func didQuit() {
