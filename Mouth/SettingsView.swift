@@ -20,6 +20,19 @@ struct SettingsView: View {
 
     @State private var testPlayback: SaySpeech.Playback?
 
+    private static let testVoicePrompts: [String] = [
+        "Mouth speaking, how can I help?",
+        "It's me, Mouth. What do you want?",
+        "Mouth here, unfortunately.",
+        "The one and only Mouth, at your service.",
+        "Mouth's in the house, what's your issue?",
+        "Hi, I'm Mouth. Don't ask how I'm doing.",
+        "Mouth speaking. Please be patient.",
+        "You've reached Mouth. This better be good.",
+        "It's just Mouth. No, I can't fix your WiFi.",
+        "Mouth here, ready to disappoint you.",
+    ]
+
     private var enabledBinding: Binding<Bool> {
         Binding(
             get: { !model.isPaused },
@@ -197,32 +210,25 @@ struct SettingsView: View {
     }
 
     private func testVoice() {
-        Task { @MainActor in
-            // Cancel any in-flight test.
-            testPlayback?.cancel()
-            testPlayback = nil
-
-            do {
-                let prompts = [
-                    "Mouth speaking, how can I help?",
-                    "It's me, Mouth. What do you want?",
-                    "Mouth here, unfortunately.",
-                    "The one and only Mouth, at your service.",
-                    "Mouth's in the house, what's your issue?",
-                    "Hi, I'm Mouth. Don't ask how I'm doing.",
-                    "Mouth speaking. Please be patient.",
-                    "You've reached Mouth. This better be good.",
-                    "It's just Mouth. No, I can't fix your WiFi.",
-                    "Mouth here, ready to disappoint you.",
-                ]
-                let p = try SaySpeech().play(prompts.randomElement()!)
-                testPlayback = p
-                try await p.wait()
-            } catch {
-                // Keep UI quiet; this is a best-effort test.
-            }
-            testPlayback = nil
+        Task {
+            await performVoiceTest()
         }
+    }
+
+    private func performVoiceTest() async {
+        // Cancel any in-flight test.
+        testPlayback?.cancel()
+        testPlayback = nil
+
+        let prompt = Self.testVoicePrompts.randomElement() ?? "Mouth speaking, how can I help?"
+        do {
+            let playback = try SaySpeech().play(prompt)
+            testPlayback = playback
+            try await playback.wait()
+        } catch {
+            // Keep UI quiet; this is a best-effort test.
+        }
+        testPlayback = nil
     }
 }
 
