@@ -54,6 +54,7 @@ Set these environment variables:
 If you already have a keychain profile configured:
 
 - `NOTARYTOOL_KEYCHAIN_PROFILE`: profile name to pass to `notarytool`
+- If no notarization env vars are set and `NOTARYTOOL_KEYCHAIN_PROFILE` is not set, the scripts fall back to `DEFAULT_NOTARYTOOL_KEYCHAIN_PROFILE` (default: `MouthNotary`).
 
 ## Build + Notarize + Package (no GitHub release)
 
@@ -73,9 +74,27 @@ This writes a helper env file at:
 
 This will:
 
+- update `appcast.xml` for Sparkle (served from `main` via `raw.githubusercontent.com`)
 - tag `v<MARKETING_VERSION>` and push it to `origin`
 - create a GitHub release with auto-generated notes
 - upload the `.zip`, `.dmg`, and optional `.dSYM.zip`
+
+## Sparkle (Updates)
+
+This app uses Sparkle 2 (ed25519).
+
+1. Generate a Sparkle keypair once (stored in your Keychain under account `com.zats.Mouth`):
+
+```bash
+# This comes from the Sparkle tools bundled in Xcode's SwiftPM artifacts.
+generate_keys --account com.zats.Mouth
+```
+
+2. Ensure `SUPublicEDKey` is present in the app's Info.plist (this repo sets it via build settings).
+
+3. `Scripts/release.sh` will:
+   - build a release with `SUFeedURL` set to your GitHub `main` appcast URL
+   - generate/update `appcast.xml` using your Keychain Sparkle key (via `generate_appcast`)
 
 ## Customization knobs
 
@@ -88,3 +107,6 @@ This will:
 - `SKIP_NOTARIZATION=1` (optional; runs archive/export/packaging but skips notarytool and stapling)
 - `DMG_SIGN_IDENTITY` (optional; if set, the DMG is `codesign`ed before notarization)
 - `CLEANUP_RELEASE_DIR=1` (optional; trash the temp release dir at the end)
+
+Note: the scripts rely on `notarytool` + `stapler validate` as the primary DMG verification.
+`spctl` assessment of DMGs can sometimes report "Insufficient Context" even for successfully stapled DMGs.

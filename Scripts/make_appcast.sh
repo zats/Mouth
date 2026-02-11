@@ -6,16 +6,7 @@ cd "$ROOT"
 
 ZIP=${1:?"Usage: $0 Mouth-<ver>.zip [feed_url]"}
 FEED_URL=${2:-""}
-PRIVATE_KEY_FILE=${SPARKLE_PRIVATE_KEY_FILE:-}
-
-if [[ -z "$PRIVATE_KEY_FILE" ]]; then
-  echo "Set SPARKLE_PRIVATE_KEY_FILE to your Sparkle Ed25519 private key file." >&2
-  exit 1
-fi
-if [[ ! -f "$PRIVATE_KEY_FILE" ]]; then
-  echo "Sparkle key file not found: $PRIVATE_KEY_FILE" >&2
-  exit 1
-fi
+SPARKLE_ACCOUNT=${SPARKLE_ACCOUNT:-com.zats.Mouth}
 if [[ ! -f "$ZIP" ]]; then
   echo "Zip not found: $ZIP" >&2
   exit 1
@@ -40,10 +31,11 @@ if [[ -z "$GEN_BIN" ]]; then
 fi
 
 "$GEN_BIN" \
-  --ed-key-file "$PRIVATE_KEY_FILE" \
+  --account "$SPARKLE_ACCOUNT" \
+  ${SPARKLE_PRIVATE_KEY_FILE:+--ed-key-file "$SPARKLE_PRIVATE_KEY_FILE"} \
   --download-url-prefix "$DOWNLOAD_URL_PREFIX" \
   ${FEED_URL:+--link "$FEED_URL"} \
+  -o "$ROOT/appcast.xml" \
   "$ZIP_DIR"
 
-echo "Appcast generated (appcast.xml). Upload alongside $ZIP."
-
+echo "Appcast updated at: $ROOT/appcast.xml"

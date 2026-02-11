@@ -21,8 +21,25 @@ ORIGIN_URL="$(git remote get-url origin 2>/dev/null || true)"
 
 require_clean_worktree
 
+# Resolve GitHub slug from origin URL (supports SSH and HTTPS).
+resolve_github_slug() {
+  local url="$1"
+  local slug=""
+  if [[ "$url" =~ ^git@github.com:([^/]+/[^/]+)(\\.git)?$ ]]; then
+    slug="${BASH_REMATCH[1]}"
+  elif [[ "$url" =~ ^https://github.com/([^/]+/[^/]+)(\\.git)?$ ]]; then
+    slug="${BASH_REMATCH[1]}"
+  fi
+  slug="${slug%.git}"
+  [[ -n "$slug" ]] || err "Unsupported origin URL for GitHub releases: $url"
+  printf "%s" "$slug"
+}
+
+GITHUB_SLUG="$(resolve_github_slug "$ORIGIN_URL")"
+
 # Build + notarize + package (zip + dmg + dsym).
-"$ROOT/Scripts/sign-and-notarize.sh"
+FEED_URL="https://raw.githubusercontent.com/${GITHUB_SLUG}/main/appcast.xml"
+MOUTH_SPARKLE_FEED_URL="$FEED_URL" "$ROOT/Scripts/sign-and-notarize.sh"
 
 # Load outputs.
 OUT_ENV="/tmp/mouth-last-release-outputs.env"
@@ -38,8 +55,16 @@ set +a
 
 TITLE="${APP_NAME} ${MARKETING_VERSION}"
 
+# Update appcast.xml (served from main via raw.githubusercontent.com).
+SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/${GITHUB_SLUG}/releases/download/${TAG}/" \
+  "$ROOT/Scripts/make_appcast.sh" "$ZIP" "$FEED_URL"
+
+git add appcast.xml
+git commit -m "Update appcast for ${TAG}"
+
 # Tag + push before creating the release so the tag exists remotely.
 git tag -f "$TAG"
+git push origin HEAD
 git push -f origin "$TAG"
 
 ASSETS=("$ZIP" "$DMG")
