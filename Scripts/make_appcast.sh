@@ -13,7 +13,18 @@ if [[ ! -f "$ZIP" ]]; then
   exit 1
 fi
 
-ZIP_DIR="$(cd "$(dirname "$ZIP")" && pwd)"
+WORK_DIR="$(mktemp -d /tmp/mouth-appcast.XXXXXX)"
+
+cleanup() {
+  if [[ -e "$WORK_DIR" ]]; then
+    if command -v trash >/dev/null 2>&1; then
+      trash --stopOnError "$WORK_DIR" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+trap cleanup EXIT
+
+cp "$ZIP" "$WORK_DIR/"
 
 DOWNLOAD_URL_PREFIX=${SPARKLE_DOWNLOAD_URL_PREFIX:-}
 if [[ -z "$DOWNLOAD_URL_PREFIX" ]]; then
@@ -37,6 +48,6 @@ fi
   --download-url-prefix "$DOWNLOAD_URL_PREFIX" \
   ${FEED_URL:+--link "$FEED_URL"} \
   -o "$APPCAST_OUT" \
-  "$ZIP_DIR"
+  "$WORK_DIR"
 
 echo "Appcast updated at: $APPCAST_OUT"
