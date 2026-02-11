@@ -13,10 +13,15 @@ CONFIGURATION=${CONFIGURATION:-Release}
 APP_NAME=${APP_NAME:-Mouth}
 DRY_RUN=${DRY_RUN:-0}
 REQUEST_CLEANUP_RELEASE_DIR=${CLEANUP_RELEASE_DIR:-0}
+VERSION_BUMP=${VERSION_BUMP:-patch}
+DRY_RUN_APPLY_VERSION_BUMP=${DRY_RUN_APPLY_VERSION_BUMP:-0}
+RELEASE_MARKETING_VERSION=${RELEASE_MARKETING_VERSION:-}
+RELEASE_BUILD_NUMBER=${RELEASE_BUILD_NUMBER:-}
 
 require_trash
 require_cmd git
 require_cmd gh
+require_cmd xcrun
 
 ORIGIN_URL="$(git remote get-url origin 2>/dev/null || true)"
 [[ -n "$ORIGIN_URL" ]] || err "No git remote named 'origin' is configured. Add it before releasing (git remote add origin <url>)."
@@ -44,6 +49,96 @@ resolve_github_slug() {
 }
 
 GITHUB_SLUG="$(resolve_github_slug "$ORIGIN_URL")"
+
+bump_semver() {
+  local version="$1"
+  local part="$2"
+
+  if [[ "$part" == "none" ]]; then
+    printf "%s" "$version"
+    return
+  fi
+
+  if [[ ! "$version" =~ ^([0-9]+)(\.([0-9]+))?(\.([0-9]+))?$ ]]; then
+    err "Cannot ${part}-bump MARKETING_VERSION '$version'. Set RELEASE_MARKETING_VERSION explicitly."
+  fi
+
+  local major="${BASH_REMATCH[1]}"
+  local minor="${BASH_REMATCH[3]:-0}"
+  local patch="${BASH_REMATCH[5]:-0}"
+
+  case "$part" in
+    patch)
+      patch=$((patch + 1))
+      ;;
+    minor)
+      minor=$((minor + 1))
+      patch=0
+      ;;
+    major)
+      major=$((major + 1))
+      minor=0
+      patch=0
+      ;;
+    *)
+      err "Unsupported VERSION_BUMP='$part'. Use one of: none, patch, minor, major."
+      ;;
+  esac
+
+  printf "%d.%d.%d" "$major" "$minor" "$patch"
+}
+
+SETTINGS_TMP_DIR="$(mktemp_dir /tmp/mouth-release-settings.XXXXXX)"
+cleanup_settings_dir() {
+  trash_if_exists "$SETTINGS_TMP_DIR"
+}
+trap cleanup_settings_dir EXIT
+
+CURRENT_SETTINGS="$SETTINGS_TMP_DIR/current-build-settings.txt"
+xcode_show_build_settings "$PROJECT" "$SCHEME" "$CONFIGURATION" >"$CURRENT_SETTINGS"
+CURRENT_MARKETING_VERSION="$(extract_setting "$CURRENT_SETTINGS" MARKETING_VERSION)"
+CURRENT_BUILD_NUMBER="$(extract_setting "$CURRENT_SETTINGS" CURRENT_PROJECT_VERSION)"
+[[ -n "$CURRENT_MARKETING_VERSION" ]] || err "Could not extract MARKETING_VERSION before bump."
+[[ -n "$CURRENT_BUILD_NUMBER" ]] || err "Could not extract CURRENT_PROJECT_VERSION before bump."
+
+TARGET_MARKETING_VERSION="$CURRENT_MARKETING_VERSION"
+if [[ -n "$RELEASE_MARKETING_VERSION" ]]; then
+  TARGET_MARKETING_VERSION="$RELEASE_MARKETING_VERSION"
+else
+  TARGET_MARKETING_VERSION="$(bump_semver "$CURRENT_MARKETING_VERSION" "$VERSION_BUMP")"
+fi
+
+if [[ "$DRY_RUN" == "1" && "$DRY_RUN_APPLY_VERSION_BUMP" != "1" ]]; then
+  echo "DRY_RUN=1: skipping version bump"
+  if [[ "$TARGET_MARKETING_VERSION" != "$CURRENT_MARKETING_VERSION" ]]; then
+    echo "Would set MARKETING_VERSION: $CURRENT_MARKETING_VERSION -> $TARGET_MARKETING_VERSION"
+  fi
+  if [[ -n "$RELEASE_BUILD_NUMBER" ]]; then
+    echo "Would set CURRENT_PROJECT_VERSION: $CURRENT_BUILD_NUMBER -> $RELEASE_BUILD_NUMBER"
+  else
+    echo "Would increment CURRENT_PROJECT_VERSION from: $CURRENT_BUILD_NUMBER"
+  fi
+else
+  if [[ "$TARGET_MARKETING_VERSION" != "$CURRENT_MARKETING_VERSION" ]]; then
+    xcrun agvtool new-marketing-version "$TARGET_MARKETING_VERSION" >/dev/null
+  fi
+
+  if [[ -n "$RELEASE_BUILD_NUMBER" ]]; then
+    xcrun agvtool new-version -all "$RELEASE_BUILD_NUMBER" >/dev/null
+  else
+    xcrun agvtool next-version -all >/dev/null
+  fi
+
+  UPDATED_SETTINGS="$SETTINGS_TMP_DIR/updated-build-settings.txt"
+  xcode_show_build_settings "$PROJECT" "$SCHEME" "$CONFIGURATION" >"$UPDATED_SETTINGS"
+  UPDATED_MARKETING_VERSION="$(extract_setting "$UPDATED_SETTINGS" MARKETING_VERSION)"
+  UPDATED_BUILD_NUMBER="$(extract_setting "$UPDATED_SETTINGS" CURRENT_PROJECT_VERSION)"
+  [[ -n "$UPDATED_MARKETING_VERSION" ]] || err "Could not extract updated MARKETING_VERSION."
+  [[ -n "$UPDATED_BUILD_NUMBER" ]] || err "Could not extract updated CURRENT_PROJECT_VERSION."
+
+  git add -A
+  git commit -m "Bump version to ${UPDATED_MARKETING_VERSION} (${UPDATED_BUILD_NUMBER})"
+fi
 
 # Build + notarize + package (zip + dmg + dsym).
 FEED_URL="https://raw.githubusercontent.com/${GITHUB_SLUG}/${FEED_BRANCH}/appcast.xml"

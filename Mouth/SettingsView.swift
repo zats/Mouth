@@ -1,6 +1,12 @@
 import SwiftUI
 
 struct SettingsView: View {
+    private enum SettingsTab: String, Hashable {
+        case general
+        case speech
+        case updates
+    }
+
     @ObservedObject var model: CodexSessionsViewModel
     let updater: UpdaterProviding
 
@@ -19,6 +25,7 @@ struct SettingsView: View {
     @State private var saveTask: Task<Void, Never>?
 
     @State private var testPlayback: SaySpeech.Playback?
+    @State private var selectedTab: SettingsTab = .general
 
     private static let testVoicePrompts: [String] = [
         "Mouth speaking, how can I help?",
@@ -51,92 +58,107 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        Form {
-            if !updaterStatusMessage.isEmpty {
-                Text(updaterStatusMessage)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 12)
-            } else if let reason = updater.unavailableReason, !reason.isEmpty {
-                Text(reason)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 12)
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                tabButton(title: "General", icon: "gearshape", tab: .general)
+                tabButton(title: "Speech", icon: "waveform", tab: .speech)
+                tabButton(title: "Updates", icon: "arrow.down.circle", tab: .updates)
             }
+            .frame(maxWidth: .infinity, alignment: .center)
 
-            Toggle("Start at login", isOn: $launchAtLogin)
-                .padding(.bottom, 12)
+            centeredPane {
+                switch selectedTab {
+                case .general:
+                    VStack(alignment: .leading, spacing: 18) {
+                        Toggle("Mouth enabled", isOn: enabledBinding)
+                            .toggleStyle(.checkbox)
 
-            Toggle("Mouth enabled", isOn: enabledBinding)
-                .padding(.bottom, 12)
+                        Toggle("Start at login", isOn: $launchAtLogin)
+                            .toggleStyle(.checkbox)
 
-            Toggle("Pause music while speaking", isOn: $pauseExternalPlaybackWhileSpeaking)
-                .padding(.bottom, 12)
+                        Toggle("Pause music while speaking", isOn: $pauseExternalPlaybackWhileSpeaking)
+                            .toggleStyle(.checkbox)
+                    }
 
-            HStack {
-                Picker("Voice engine", selection: $speechProviderRaw) {
-                    Text(SaySpeech.Provider.macOSSay.displayName).tag(SaySpeech.Provider.macOSSay.rawValue)
-                    Text(SaySpeech.Provider.sag.displayName)
-                        .tag(SaySpeech.Provider.sag.rawValue)
-                        .disabled(!sagInstalled)
-                }
+                case .speech:
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 10) {
+                            Picker("Voice engine", selection: $speechProviderRaw) {
+                                Text(SaySpeech.Provider.macOSSay.displayName).tag(SaySpeech.Provider.macOSSay.rawValue)
+                                Text(SaySpeech.Provider.sag.displayName)
+                                    .tag(SaySpeech.Provider.sag.rawValue)
+                                    .disabled(!sagInstalled)
+                            }
 
-                Button {
-                    testVoice()
-                } label: {
-                    Image(systemName: "play.fill")
-                }
-                .help("Test voice")
-                .disabled(testPlayback != nil)
-            }
-            .padding(.bottom, 12)
-
-            if sagInstalled, selectedProvider == .sag {
-                ZStack(alignment: .trailing) {
-                    SecureField("ElevenLabs API key", text: $sagAPIKeyDraft)
-                        .padding(.leading, 12)
-
-                    if sagHasAPIKey {
-                        Button {
-                            sagAPIKeyDraft = ""
-                            persistSAGAPIKeySoon()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
+                            Button {
+                                testVoice()
+                            } label: {
+                                Label("Test", systemImage: "play.fill")
+                            }
+                            .disabled(testPlayback != nil)
                         }
-                        .buttonStyle(.plain)
-                        .help("Clear API key")
-                        .padding(.horizontal, 6)
-                        .background()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if sagInstalled, selectedProvider == .sag {
+                            ZStack(alignment: .trailing) {
+                                SecureField("ElevenLabs API key", text: $sagAPIKeyDraft)
+                                    .textFieldStyle(.roundedBorder)
+
+                                if sagHasAPIKey {
+                                    Button {
+                                        sagAPIKeyDraft = ""
+                                        persistSAGAPIKeySoon()
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Clear API key")
+                                    .padding(.trailing, 8)
+                                }
+                            }
+
+                            if let sagKeyError {
+                                Text(sagKeyError)
+                                    .font(.footnote)
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                    }
+
+                case .updates:
+                    VStack(alignment: .leading, spacing: 14) {
+                        Toggle("Check for updates automatically", isOn: $autoUpdateEnabled)
+                            .toggleStyle(.checkbox)
+                            .disabled(!updater.isAvailable)
+
+                        Button(isCheckingForUpdates ? "Checking for Updates…" : "Check for Updates…") {
+                            updater.checkForUpdates(nil)
+                        }
+                        .disabled(!updater.isAvailable || isCheckingForUpdates)
+
+                        if !updaterStatusMessage.isEmpty {
+                            Text(updaterStatusMessage)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if let reason = updater.unavailableReason, !reason.isEmpty {
+                            Text(reason)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
-
-                if let sagKeyError {
-                    Text(sagKeyError)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
             }
-            
-            Toggle("Check for updates automatically", isOn: $autoUpdateEnabled)
-                .disabled(!updater.isAvailable)
-                .padding(.top, 12)
-                .padding(.bottom, 12)
-
-            Button(isCheckingForUpdates ? "Checking for Updates…" : "Check for Updates…") {
-                Task { @MainActor in
-                    updater.checkForUpdates(nil)
-                }
-            }
-            .disabled(!updater.isAvailable || isCheckingForUpdates)
         }
-        .padding(20)
-        .onAppear {
+        .padding(12)
+        .frame(width: 430, height: 320, alignment: .center)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .task {
             loadState()
-            Task { @MainActor in
-                updater.automaticallyChecksForUpdates = autoUpdateEnabled
-                updater.automaticallyDownloadsUpdates = autoUpdateEnabled
-            }
+            updater.automaticallyChecksForUpdates = autoUpdateEnabled
+            updater.automaticallyDownloadsUpdates = autoUpdateEnabled
         }
         .onDisappear {
             saveTask?.cancel()
@@ -170,16 +192,41 @@ struct SettingsView: View {
         }
     }
 
-    private func loadState() {
-        // If SAG was previously selected but is no longer installed, reset to macOS say.
-        if !sagInstalled, selectedProvider == .sag {
-            speechProviderRaw = SaySpeech.Provider.macOSSay.rawValue
+    @ViewBuilder
+    private func tabButton(title: String, icon: String, tab: SettingsTab) -> some View {
+        let isSelected = selectedTab == tab
+
+        Button {
+            selectedTab = tab
+        } label: {
+            Label(title, systemImage: icon)
+                .font(.subheadline)
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(minWidth: 92)
+                .background(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
+                .clipShape(Capsule())
         }
+        .buttonStyle(.plain)
+    }
 
-        // Apply launch-at-login in case the user opened Settings before app startup finished,
-        // or if a previous register/unregister failed transiently.
-        LaunchAtLoginManager.setEnabled(launchAtLogin)
+    @ViewBuilder
+    private func centeredPane<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack {
+            Spacer(minLength: 0)
+            HStack {
+                Spacer(minLength: 0)
+                content()
+                    .frame(width: 320, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
 
+    private func loadState() {
         didLoadKey = false
         sagKeyError = nil
 

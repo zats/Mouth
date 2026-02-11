@@ -9,9 +9,6 @@ final class SettingsWindowController: NSWindowController {
         self.model = model
         self.updater = updater
 
-        let view = SettingsView(model: model, updater: updater)
-        let hosting = NSHostingView(rootView: view)
-
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 360),
             styleMask: [.titled, .closable, .miniaturizable],
@@ -21,7 +18,6 @@ final class SettingsWindowController: NSWindowController {
         window.title = "Settings"
         window.isReleasedWhenClosed = false
         window.center()
-        window.contentView = hosting
 
         super.init(window: window)
     }
@@ -32,6 +28,12 @@ final class SettingsWindowController: NSWindowController {
     }
 
     func show() {
+        if window?.contentViewController == nil {
+            let view = SettingsView(model: model, updater: updater)
+            let hostingController = NSHostingController(rootView: view)
+            window?.contentViewController = hostingController
+        }
+
         // Make sure the window actually appears and the app comes to front.
         if #available(macOS 14.0, *) {
             NSApp.activate()
