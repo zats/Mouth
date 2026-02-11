@@ -39,17 +39,6 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Toggle("Check for updates automatically", isOn: $autoUpdateEnabled)
-                .disabled(!updater.isAvailable)
-                .padding(.bottom, 12)
-
-            Button(isCheckingForUpdates ? "Checking for Updates…" : "Check for Updates…") {
-                Task { @MainActor in
-                    updater.checkForUpdates(nil)
-                }
-            }
-            .disabled(!updater.isAvailable || isCheckingForUpdates)
-
             if !updaterStatusMessage.isEmpty {
                 Text(updaterStatusMessage)
                     .font(.footnote)
@@ -116,6 +105,16 @@ struct SettingsView: View {
                 }
             }
 
+            Toggle("Check for updates automatically", isOn: $autoUpdateEnabled)
+                .disabled(!updater.isAvailable)
+                .padding(.bottom, 12)
+
+            Button(isCheckingForUpdates ? "Checking for Updates…" : "Check for Updates…") {
+                Task { @MainActor in
+                    updater.checkForUpdates(nil)
+                }
+            }
+            .disabled(!updater.isAvailable || isCheckingForUpdates)
         }
         .padding(20)
         .onAppear {
@@ -225,4 +224,8 @@ struct SettingsView: View {
             testPlayback = nil
         }
     }
+}
+
+#Preview {
+    SettingsView(model: .init(engine: .init()), updater: DisabledUpdaterController())
 }
