@@ -12,6 +12,7 @@ CONFIGURATION=${CONFIGURATION:-Release}
 
 APP_NAME=${APP_NAME:-Mouth}
 DRY_RUN=${DRY_RUN:-0}
+REQUEST_CLEANUP_RELEASE_DIR=${CLEANUP_RELEASE_DIR:-0}
 
 require_trash
 require_cmd git
@@ -46,7 +47,7 @@ GITHUB_SLUG="$(resolve_github_slug "$ORIGIN_URL")"
 
 # Build + notarize + package (zip + dmg + dsym).
 FEED_URL="https://raw.githubusercontent.com/${GITHUB_SLUG}/${FEED_BRANCH}/appcast.xml"
-MOUTH_SPARKLE_FEED_URL="$FEED_URL" "$ROOT/Scripts/sign-and-notarize.sh"
+MOUTH_SPARKLE_FEED_URL="$FEED_URL" CLEANUP_RELEASE_DIR=0 "$ROOT/Scripts/sign-and-notarize.sh"
 
 # Load outputs.
 OUT_ENV="/tmp/mouth-last-release-outputs.env"
@@ -87,7 +88,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     echo "DSYM_ZIP: $DSYM_ZIP"
   fi
   if [[ -n "${DRY_DIR:-}" ]]; then
-    if [[ "${CLEANUP_RELEASE_DIR:-0}" == "1" ]]; then
+    if [[ "$REQUEST_CLEANUP_RELEASE_DIR" == "1" ]]; then
       trash_if_exists "$DRY_DIR"
     else
       echo "Dry-run directory: $DRY_DIR"
@@ -125,6 +126,6 @@ gh release create "$TAG" "${ASSETS[@]}" \
 echo "GitHub release created for $TAG"
 echo "Assets uploaded from: ${RELEASE_DIR:-unknown}"
 
-if [[ "${CLEANUP_RELEASE_DIR:-0}" == "1" && -n "${RELEASE_DIR:-}" ]]; then
+if [[ "$REQUEST_CLEANUP_RELEASE_DIR" == "1" && -n "${RELEASE_DIR:-}" ]]; then
   trash_if_exists "$RELEASE_DIR"
 fi
