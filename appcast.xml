@@ -3,6 +3,15 @@
     <channel>
         <title>Mouth</title>
         <item>
+            <title>1.4.0</title>
+            <pubDate>Wed, 11 Feb 2026 21:31:45 -0500</pubDate>
+            <link>https://raw.githubusercontent.com/zats/Mouth/main/appcast.xml</link>
+            <sparkle:version>8</sparkle:version>
+            <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.2</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/zats/Mouth/releases/download/v1.4.0/Mouth-1.4.0.zip" length="6872800" type="application/octet-stream" sparkle:edSignature="IYiFgRe6YMlSXAgypvYUI5MOSKpgdy0wPeBeFo0/nEv7tZec9b/KbHHxQwb5YrFs0dmQLKCuucyVULJX8Q8mAA=="/>
+        </item>
+        <item>
             <title>1.3.0</title>
             <pubDate>Wed, 11 Feb 2026 19:27:10 -0500</pubDate>
             <link>https://raw.githubusercontent.com/zats/Mouth/main/appcast.xml</link>
@@ -19,15 +28,6 @@
             <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.2</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/zats/Mouth/releases/download/v1.2.0/Mouth-1.2.0.zip" length="6676661" type="application/octet-stream" sparkle:edSignature="4v4XPj+UU+NDt21ERyC+ExTAP4ioQeisOktPtEBIKj1IqA0RvyjZuyLR4fT3TpL4b6slZpJUJT6evRk44IMEBw=="/>
-        </item>
-        <item>
-            <title>1.1.0</title>
-            <pubDate>Wed, 11 Feb 2026 10:43:57 -0500</pubDate>
-            <link>https://raw.githubusercontent.com/zats/Mouth/main/appcast.xml</link>
-            <sparkle:version>5</sparkle:version>
-            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>26.2</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/zats/Mouth/releases/download/v1.1.0/Mouth-1.1.0.zip" length="6676708" type="application/octet-stream" sparkle:edSignature="Bs4fK2Vq4KuCN1jApYN1Kg1p3NR1y5m9efT6pNxxDKxZ8EiY9VaAL1C80XB0ktkYie8ghbBgU3mXhj3w08sVDQ=="/>
         </item>
     </channel>
 </rss>
