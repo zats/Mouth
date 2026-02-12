@@ -29,6 +29,13 @@ enum StopSpeechHotkeyMode: String, CaseIterable {
     static let defaultsKey = "mouth.hotkey.stop_speech.mode"
 
     static var current: StopSpeechHotkeyMode {
+        // The UI treats "no shortcut" as Play/Pause fallback.
+        // Derive mode from actual shortcut presence first so stale persisted mode
+        // values cannot disable Play/Pause after clearing the recorder.
+        if KeyboardShortcuts.Name.stopSpeech.shortcut != nil {
+            return .keyboardShortcut
+        }
+
         let ud = UserDefaults.standard
         guard let raw = ud.string(forKey: defaultsKey) else {
             return .mediaPlayPause

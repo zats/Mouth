@@ -14,9 +14,22 @@
 		5C7D807E2F3B766F00681330 /* Mouth.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Mouth.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		7A01C4E32D7B9A4F00A1B2C3 /* Exceptions for "Mouth" folder in "Mouth" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 5C7D807D2F3B766F00681330 /* Mouth */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		5C7D80802F3B766F00681330 /* Mouth */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				7A01C4E32D7B9A4F00A1B2C3 /* Exceptions for "Mouth" folder in "Mouth" target */,
+			);
 			path = Mouth;
 			sourceTree = "<group>";
 		};

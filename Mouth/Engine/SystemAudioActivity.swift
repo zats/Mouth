@@ -57,9 +57,17 @@ enum SystemAudioActivity {
 
     static func isAnyOtherProcessRunningOutput(excludingPIDs: Set<pid_t> = [getpid()]) -> Bool {
         guard let runningPIDs = otherProcessesRunningOutput(excludingPIDs: excludingPIDs) else {
-            return false
+            // Process-level inspection can fail on some systems/configurations.
+            // Fall back to device-level activity so we still pause active playback.
+            return isOutputDeviceRunningSomewhere()
         }
-        return !runningPIDs.isEmpty
+        if !runningPIDs.isEmpty {
+            return true
+        }
+
+        // Keep a fallback for cases where process objects are available but miss
+        // a currently-playing app (for example, some third-party players).
+        return isOutputDeviceRunningSomewhere()
     }
 
     static func isOutputDeviceRunningSomewhere() -> Bool {
