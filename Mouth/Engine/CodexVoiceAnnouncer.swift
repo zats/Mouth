@@ -21,6 +21,7 @@ final class CodexVoiceAnnouncer {
     private var currentItem: Item?
 
     private var didPauseExternalPlayback = false
+    private var pendingExternalResumeTask: Task<Void, Never>?
     private var isSpeaking = false
     private var paused = false
 
@@ -60,15 +61,7 @@ final class CodexVoiceAnnouncer {
         runner?.cancel()
         runner = nil
 
-        if didPauseExternalPlayback {
-            // If we paused someone else's playback at the start of this batch, resume it on stop
-            // only when the setting is enabled.
-            if shouldPauseExternalPlaybackWhileSpeaking() {
-                MediaKeyController.togglePlayPause()
-            }
-            didPauseExternalPlayback = false
-        }
-
+        resumeExternalPlaybackIfNeeded()
         setCurrentItem(nil)
         setSpeaking(false)
     }
@@ -86,6 +79,9 @@ final class CodexVoiceAnnouncer {
             setCurrentItem(nil)
             setSpeaking(false)
         }
+
+        pendingExternalResumeTask?.cancel()
+        pendingExternalResumeTask = nil
 
         if paused {
             return
@@ -107,12 +103,7 @@ final class CodexVoiceAnnouncer {
 
         while !Task.isCancelled {
             guard !queue.isEmpty else {
-                if didPauseExternalPlayback {
-                    if shouldPauseExternalPlaybackWhileSpeaking() {
-                        MediaKeyController.togglePlayPause()
-                    }
-                    didPauseExternalPlayback = false
-                }
+                resumeExternalPlaybackIfNeeded()
                 return
             }
 
@@ -137,6 +128,25 @@ final class CodexVoiceAnnouncer {
                 // Non-fatal; continue with next queued item.
             }
             currentSpeech = nil
+        }
+    }
+
+    private func resumeExternalPlaybackIfNeeded() {
+        guard didPauseExternalPlayback else { return }
+        didPauseExternalPlayback = false
+
+        guard shouldPauseExternalPlaybackWhileSpeaking() else { return }
+
+        // Turn off speaking first so the media-key interceptor is disabled before we resume.
+        setSpeaking(false)
+
+        pendingExternalResumeTask?.cancel()
+        pendingExternalResumeTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            guard !Task.isCancelled else { return }
+            MediaKeyController.togglePlayPause()
+            self.pendingExternalResumeTask = nil
         }
     }
 

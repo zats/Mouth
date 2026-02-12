@@ -111,6 +111,12 @@ final class PlayPauseMediaKeyInterceptor {
             return Unmanaged.passUnretained(event)
         }
 
+        // While we are synthesizing our own play/pause events, don't swallow them.
+        // This prevents Mouth from blocking the play/pause it emits to pause/resume other apps.
+        if MediaKeyController.consumePlayPausePassThroughIfNeeded(forKeyState: keyState) {
+            return Unmanaged.passUnretained(event)
+        }
+
         // 0xA is keyDown; 0xB is keyUp (matches MediaKeyController).
         if keyState == 0xA {
             onPlayPauseKeyDown()

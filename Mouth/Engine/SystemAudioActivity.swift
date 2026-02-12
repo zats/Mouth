@@ -2,7 +2,7 @@ import Foundation
 import CoreAudio
 
 enum SystemAudioActivity {
-    static func isAnyOtherProcessRunningOutput(excludingPIDs: Set<pid_t> = [getpid()]) -> Bool {
+    static func otherProcessesRunningOutput(excludingPIDs: Set<pid_t> = [getpid()]) -> Set<pid_t>? {
         let system = AudioObjectID(kAudioObjectSystemObject)
 
         var addr = AudioObjectPropertyAddress(
@@ -14,16 +14,17 @@ enum SystemAudioActivity {
         var size: UInt32 = 0
         let stSize = AudioObjectGetPropertyDataSize(system, &addr, 0, nil, &size)
         guard stSize == noErr, size >= UInt32(MemoryLayout<AudioObjectID>.size) else {
-            return false
+            return nil
         }
 
         let count = Int(size) / MemoryLayout<AudioObjectID>.size
         var procIDs = Array(repeating: AudioObjectID(0), count: count)
         let stData = AudioObjectGetPropertyData(system, &addr, 0, nil, &size, &procIDs)
         guard stData == noErr else {
-            return false
+            return nil
         }
 
+        var runningPIDs = Set<pid_t>()
         for procID in procIDs {
             var pid: pid_t = 0
             var pidSize = UInt32(MemoryLayout<pid_t>.size)
@@ -47,11 +48,18 @@ enum SystemAudioActivity {
             guard stRun == noErr else { continue }
 
             if isRunningOutput != 0 {
-                return true
+                runningPIDs.insert(pid)
             }
         }
 
-        return false
+        return runningPIDs
+    }
+
+    static func isAnyOtherProcessRunningOutput(excludingPIDs: Set<pid_t> = [getpid()]) -> Bool {
+        guard let runningPIDs = otherProcessesRunningOutput(excludingPIDs: excludingPIDs) else {
+            return false
+        }
+        return !runningPIDs.isEmpty
     }
 
     static func isOutputDeviceRunningSomewhere() -> Bool {
