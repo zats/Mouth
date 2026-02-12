@@ -14,6 +14,7 @@ final class StatusItemController: NSObject {
 
     private var speakingObserver: NSObjectProtocol?
     private var currentItemObserver: NSObjectProtocol?
+    private var defaultsObserver: NSObjectProtocol?
     private var cancellables = Set<AnyCancellable>()
     private var menu: NSMenu?
     private weak var stopSpeechItem: NSMenuItem?
@@ -59,6 +60,7 @@ final class StatusItemController: NSObject {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
             button.imagePosition = .imageOnly
+            button.imageScaling = .scaleProportionallyDown
             button.toolTip = "Mouth"
         }
 
@@ -85,7 +87,7 @@ final class StatusItemController: NSObject {
             guard let self else { return }
             let speaking = (note.userInfo?["speaking"] as? Bool) ?? false
             self.isSpeaking = speaking
-            self.playPauseInterceptor?.setEnabled(speaking)
+            self.updatePlayPauseInterception()
             if !speaking {
                 self.currentSpeakingSessionID = nil
             }
@@ -101,6 +103,14 @@ final class StatusItemController: NSObject {
             guard let self else { return }
             self.currentSpeakingSessionID = note.userInfo?["sessionID"] as? String
         }
+
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updatePlayPauseInterception()
+        }
     }
 
     deinit {
@@ -112,6 +122,9 @@ final class StatusItemController: NSObject {
         }
         if let currentItemObserver {
             NotificationCenter.default.removeObserver(currentItemObserver)
+        }
+        if let defaultsObserver {
+            NotificationCenter.default.removeObserver(defaultsObserver)
         }
     }
 
@@ -209,6 +222,14 @@ final class StatusItemController: NSObject {
         pauseItem?.title = isPaused ? "Resume" : "Pause"
     }
 
+    private func shouldUsePlayPauseMediaKeyForStop() -> Bool {
+        StopSpeechHotkeyMode.current == .mediaPlayPause
+    }
+
+    private func updatePlayPauseInterception() {
+        playPauseInterceptor?.setEnabled(isSpeaking && shouldUsePlayPauseMediaKeyForStop())
+    }
+
     private func updateStopSpeechMenuItem() {
         guard let menu else { return }
 
@@ -247,7 +268,7 @@ final class StatusItemController: NSObject {
     private func updateIcon() {
         if isPaused {
             stopWaveformAnimation()
-            setStatusItemSymbol("mouth")
+            setStatusItemSymbol("mouth.disabled.custom")
         } else if isSpeaking {
             startWaveformAnimationIfNeeded()
         } else {
@@ -286,7 +307,11 @@ final class StatusItemController: NSObject {
     }
 
     private func setStatusItemSymbol(_ name: String) {
-        let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)
+        let symbolConfiguration = NSImage.SymbolConfiguration(textStyle: .body)
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(symbolConfiguration)
+            ?? NSImage(named: name)?
+            .withSymbolConfiguration(symbolConfiguration)
         img?.isTemplate = true
         statusItem.button?.image = img
     }
