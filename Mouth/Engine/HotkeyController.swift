@@ -49,6 +49,6 @@ enum StopSpeechHotkeyMode: String, CaseIterable {
 }
 
 extension KeyboardShortcuts.Name {
-    static let toggleMouthEnabled = Self("mouth.toggle.enabled")
+    static let toggleMouthEnabled = Self("mouth.toggle.enabled", default: .init(.f8))
     static let stopSpeech = Self("mouth.stop.speech")
 }

@@ -165,10 +165,12 @@ func makeUpdaterController() -> UpdaterProviding {
         return DisabledUpdaterController(unavailableReason: "Updates unavailable in this build.")
     }
 
+    #if !DEBUG
     // Avoid Sparkle UI in local/debug builds where code signing and feed URL are usually missing.
     guard isDeveloperIDSigned(bundleURL: bundleURL) else {
         return DisabledUpdaterController(unavailableReason: "Updates unavailable in this build.")
     }
+    #endif
 
     let feed = (Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
