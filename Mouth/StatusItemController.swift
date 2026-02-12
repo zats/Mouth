@@ -16,11 +16,15 @@ final class StatusItemController: NSObject {
     private var currentItemObserver: NSObjectProtocol?
     private var cancellables = Set<AnyCancellable>()
     private var menu: NSMenu?
+    private weak var stopSpeechItem: NSMenuItem?
     private weak var pauseItem: NSMenuItem?
     private weak var checkForUpdatesItem: NSMenuItem?
     private var currentSpeakingSessionID: String?
     private var isPaused = false
     private var isSpeaking = false
+    private var waveformTimer: Timer?
+    private let waveformSymbols = ["waveform.low", "waveform.mid", "waveform"]
+    private var currentWaveformSymbol: String?
 
     private var playPauseInterceptor: PlayPauseMediaKeyInterceptor?
 
@@ -85,6 +89,7 @@ final class StatusItemController: NSObject {
             if !speaking {
                 self.currentSpeakingSessionID = nil
             }
+            self.updateStopSpeechMenuItem()
             self.updateIcon()
         }
 
@@ -99,6 +104,9 @@ final class StatusItemController: NSObject {
     }
 
     deinit {
+        waveformTimer?.invalidate()
+        waveformTimer = nil
+
         if let speakingObserver {
             NotificationCenter.default.removeObserver(speakingObserver)
         }
@@ -155,6 +163,7 @@ final class StatusItemController: NSObject {
         menu.addItem(quit)
 
         self.menu = menu
+        updateStopSpeechMenuItem()
         updatePauseMenuItem()
     }
 
@@ -172,6 +181,7 @@ final class StatusItemController: NSObject {
         stopHandler()
         isSpeaking = false
         currentSpeakingSessionID = nil
+        updateStopSpeechMenuItem()
         updateIcon()
     }
 
@@ -187,12 +197,32 @@ final class StatusItemController: NSObject {
         checkForUpdatesHandler()
     }
 
+    @objc private func didStopSpeech() {
+        stopSpeakingNow()
+    }
+
     @objc private func didQuit() {
         quitHandler()
     }
 
     private func updatePauseMenuItem() {
         pauseItem?.title = isPaused ? "Resume" : "Pause"
+    }
+
+    private func updateStopSpeechMenuItem() {
+        guard let menu else { return }
+
+        if isSpeaking {
+            if stopSpeechItem == nil {
+                let stopSpeech = NSMenuItem(title: "Stop Speech", action: #selector(didStopSpeech), keyEquivalent: "")
+                stopSpeech.target = self
+                menu.insertItem(stopSpeech, at: 0)
+                stopSpeechItem = stopSpeech
+            }
+        } else if let stopSpeechItem {
+            menu.removeItem(stopSpeechItem)
+            self.stopSpeechItem = nil
+        }
     }
 
     private func canOpenCodexThread(sessionID: String) -> Bool {
@@ -215,21 +245,49 @@ final class StatusItemController: NSObject {
     }
 
     private func updateIcon() {
-        let img: NSImage?
-
         if isPaused {
-            // When disabled altogether: show mouth (not filled).
-            img = NSImage(systemSymbolName: "mouth", accessibilityDescription: nil)
+            stopWaveformAnimation()
+            setStatusItemSymbol("mouth")
         } else if isSpeaking {
-            // When speaking: show stop icon.
-            img = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil)
+            startWaveformAnimationIfNeeded()
         } else {
-            // Enabled but idle: keep your original mouth.fill.
-            img = NSImage(systemSymbolName: "mouth.fill", accessibilityDescription: nil)
+            stopWaveformAnimation()
+            setStatusItemSymbol("mouth.fill")
         }
 
+        statusItem.button?.toolTip = isPaused ? "Mouth (Paused)" : (isSpeaking ? "Mouth (Speaking)" : "Mouth")
+    }
+
+    private func startWaveformAnimationIfNeeded() {
+        if waveformTimer == nil {
+            currentWaveformSymbol = nil
+            setStatusItemSymbol(nextWaveformSymbol())
+
+            let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                self.setStatusItemSymbol(self.nextWaveformSymbol())
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            waveformTimer = timer
+        }
+    }
+
+    private func stopWaveformAnimation() {
+        waveformTimer?.invalidate()
+        waveformTimer = nil
+        currentWaveformSymbol = nil
+    }
+
+    private func nextWaveformSymbol() -> String {
+        let choices = waveformSymbols.filter { $0 != currentWaveformSymbol }
+        let next = choices.randomElement() ?? "waveform.mid"
+        currentWaveformSymbol = next
+        return next
+    }
+
+    private func setStatusItemSymbol(_ name: String) {
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)
         img?.isTemplate = true
         statusItem.button?.image = img
-        statusItem.button?.toolTip = isPaused ? "Mouth (Paused)" : (isSpeaking ? "Mouth (Speaking)" : "Mouth")
     }
 }
