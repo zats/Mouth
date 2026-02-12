@@ -8,6 +8,7 @@ final class MouthAppController: ObservableObject {
     let updater: UpdaterProviding
 
     private let statusItemController: StatusItemController
+    private let hotkeyController: HotkeyController
 
     init() {
         LaunchAtLoginManager.applySavedSetting()
@@ -18,6 +19,8 @@ final class MouthAppController: ObservableObject {
         let engine = MouthEngine()
         let model = CodexSessionsViewModel(engine: engine)
         self.sessionsModel = model
+        self.hotkeyController = HotkeyController()
+        hotkeyController.bind(model: model)
 
         self.statusItemController = StatusItemController(
             model: model,

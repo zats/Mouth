@@ -4,6 +4,7 @@ struct SettingsView: View {
     private enum SettingsTab: String, Hashable {
         case general
         case speech
+        case hotkeys
         case updates
     }
 
@@ -14,6 +15,7 @@ struct SettingsView: View {
     @AppStorage(CodexVoiceAnnouncer.pauseExternalPlaybackDefaultsKey) private var pauseExternalPlaybackWhileSpeaking: Bool = true
     @AppStorage(LaunchAtLoginManager.defaultsKey) private var launchAtLogin: Bool = false
     @AppStorage("mouth.auto_update_enabled") private var autoUpdateEnabled: Bool = true
+    @AppStorage(StopSpeechHotkeyMode.defaultsKey) private var stopSpeechHotkeyModeRaw: String = StopSpeechHotkeyMode.mediaPlayPause.rawValue
 
     @State private var updaterStatusMessage: String = ""
     @State private var isCheckingForUpdates: Bool = false
@@ -67,12 +69,16 @@ struct SettingsView: View {
                 .tabItem { Label("Speech", systemImage: "waveform") }
                 .tag(SettingsTab.speech)
 
+            hotkeysPane
+                .tabItem { Label("Hotkeys", systemImage: "keyboard") }
+                .tag(SettingsTab.hotkeys)
+
             updatesPane
                 .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
                 .tag(SettingsTab.updates)
         }
         .padding(12)
-        .frame(width: 430, height: 240, alignment: .topLeading)
+        .frame(width: 460, height: 200, alignment: .topLeading)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
             loadState()
@@ -204,10 +210,48 @@ struct SettingsView: View {
         }
     }
 
+    private var hotkeysPane: some View {
+        centeredTabContent {
+            VStack(alignment: .leading, spacing: 10) {
+                hotkeyRow(title: "Toggle Mouth enabled") {
+                    KeyboardShortcuts.Recorder(for: .toggleMouthEnabled)
+                }
+
+                hotkeyRow(title: "Stop current speech") {
+                    KeyboardShortcuts.Recorder(
+                        for: .stopSpeech,
+                        onChange: { shortcut in
+                            let newValue = shortcut == nil
+                                ? StopSpeechHotkeyMode.mediaPlayPause.rawValue
+                                : StopSpeechHotkeyMode.keyboardShortcut.rawValue
+                            if newValue != stopSpeechHotkeyModeRaw {
+                                stopSpeechHotkeyModeRaw = newValue
+                            }
+                        },
+                        placeholder: {
+                            Image(systemName: "playpause.fill")
+                                .font(.body.weight(.ultraLight))
+                                .foregroundStyle(.primary)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                        }
+                    )
+                }
+            }
+        }
+    }
+
     private func centeredTabContent<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         content()
             .frame(maxWidth: 330, alignment: .leading)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private func hotkeyRow<Recorder: View>(title: String, @ViewBuilder recorder: () -> Recorder) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            recorder()
+        }
     }
 
     private func loadState() {

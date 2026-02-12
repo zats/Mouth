@@ -11,7 +11,7 @@ struct MouthApp: App {
         Settings {
             SettingsView(model: appController.sessionsModel, updater: appController.updater)
         }
-        .defaultSize(width: 430, height: 340)
+        .defaultSize(width: 430, height: 240)
         .windowResizability(.contentSize)
         .windowStyle(.titleBar)
     }

@@ -273,7 +273,7 @@ final class StatusItemController: NSObject {
             startWaveformAnimationIfNeeded()
         } else {
             stopWaveformAnimation()
-            setStatusItemSymbol("mouth.fill")
+            setStatusItemSymbol("mouth.enabled.custom")
         }
 
         statusItem.button?.toolTip = isPaused ? "Mouth (Paused)" : (isSpeaking ? "Mouth (Speaking)" : "Mouth")
