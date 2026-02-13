@@ -1,7 +1,6 @@
 import Foundation
 import FoundationModels
 import Darwin
-import AppKit
 
 @MainActor
 final class CodexVoiceAnnouncer {
@@ -169,11 +168,7 @@ final class CodexVoiceAnnouncer {
                     try await p.wait()
                 } catch {
                     // Non-fatal; continue to speech.
-                    playBeepFallback()
                 }
-            } else {
-                // Fallback in case the bundled resource is not discoverable.
-                playBeepFallback()
             }
 
             do {
@@ -229,10 +224,6 @@ final class CodexVoiceAnnouncer {
             Bundle.main.url(forResource: "Resources/delimiter", withExtension: "wav"),
             Bundle.main.url(forResource: "Resources/Sounds/delimiter", withExtension: "wav")
         ].compactMap { $0 }.first
-    }
-
-    private func playBeepFallback() {
-        NSBeep()
     }
 
     private func setSpeaking(_ speaking: Bool) {
