@@ -1,6 +1,6 @@
 import AVFoundation
+import ApplicationServices
 import Foundation
-import NaturalLanguage
 import Security
 
 enum SaySpeechError: Error, LocalizedError {
@@ -12,6 +12,7 @@ enum SaySpeechError: Error, LocalizedError {
     case elevenLabsNoVoicesAvailable
     case elevenLabsRequestFailed(statusCode: Int, message: String)
     case invalidElevenLabsResponse
+    case speechManagerFailure(operation: String, status: Int16)
 
     var errorDescription: String? {
         switch self {
@@ -31,6 +32,8 @@ enum SaySpeechError: Error, LocalizedError {
             return "ElevenLabs request failed (\(statusCode)): \(message)"
         case .invalidElevenLabsResponse:
             return "Invalid response from ElevenLabs"
+        case let .speechManagerFailure(operation, status):
+            return "Speech Manager failed while \(operation) (OSStatus \(Int(status)))"
         }
     }
 }
@@ -165,42 +168,99 @@ final class SaySpeech {
         func wait() async throws
     }
 
-    fileprivate final class SpeechSession: NSObject, AVSpeechSynthesizerDelegate, PlaybackController, @unchecked Sendable {
-        private let synthesizer = AVSpeechSynthesizer()
-        private let utterance: AVSpeechUtterance
+    fileprivate final class SpeechSession: PlaybackController, @unchecked Sendable {
+        private let text: String
+        private let voiceSpec: VoiceSpec?
+        private let rate: Int?
 
         private let lock = NSLock()
         private var continuation: CheckedContinuation<Void, Error>?
         private var terminalResult: Result<Void, Error>?
         private var running = false
+        private var channel: SpeechChannel?
+        private var monitorTask: Task<Void, Never>?
 
-        init(utterance: AVSpeechUtterance) {
-            self.utterance = utterance
-            super.init()
-            synthesizer.delegate = self
+        init(text: String, voiceSpec: VoiceSpec?, rate: Int?) {
+            self.text = text
+            self.voiceSpec = voiceSpec
+            self.rate = rate
         }
 
         var isRunning: Bool {
             lock.withLock { running }
         }
 
-        func start() {
-            lock.withLock {
-                running = true
+        func start() throws {
+            var createdChannel: SpeechChannel?
+
+            let createStatus: Int16
+            if var selectedVoice = voiceSpec {
+                createStatus = withUnsafeMutablePointer(to: &selectedVoice) { voicePointer in
+                    NewSpeechChannel(voicePointer, &createdChannel)
+                }
+            } else {
+                createStatus = NewSpeechChannel(nil, &createdChannel)
             }
 
-            runOnMain {
-                synthesizer.speak(utterance)
+            guard createStatus == noErr, let createdChannel else {
+                throw SaySpeechError.speechManagerFailure(
+                    operation: "opening speech channel",
+                    status: createStatus
+                )
+            }
+
+            if let rate {
+                let setRateStatus = SetSpeechRate(
+                    createdChannel,
+                    SaySpeech.mapWordsPerMinuteToSpeechManagerRate(rate)
+                )
+                guard setRateStatus == noErr else {
+                    _ = DisposeSpeechChannel(createdChannel)
+                    throw SaySpeechError.speechManagerFailure(
+                        operation: "setting speech rate",
+                        status: setRateStatus
+                    )
+                }
+            }
+
+            lock.withLock {
+                running = true
+                channel = createdChannel
+            }
+
+            let speakStatus = SpeakCFString(createdChannel, text as CFString, nil)
+            guard speakStatus == noErr else {
+                lock.withLock {
+                    running = false
+                    channel = nil
+                }
+                _ = DisposeSpeechChannel(createdChannel)
+                throw SaySpeechError.speechManagerFailure(
+                    operation: "speaking text",
+                    status: speakStatus
+                )
+            }
+
+            let task = Task { [weak self] in
+                guard let self else {
+                    return
+                }
+                await monitorChannel()
+            }
+
+            lock.withLock {
+                monitorTask = task
             }
         }
 
         func cancel() {
-            let shouldStop = lock.withLock { running }
-            guard shouldStop else { return }
-
-            runOnMain {
-                _ = synthesizer.stopSpeaking(at: .immediate)
+            let activeChannel: SpeechChannel? = lock.withLock {
+                channel
             }
+            guard let activeChannel else { return }
+
+            _ = StopSpeech(activeChannel)
+            finish(.failure(SaySpeechError.cancelled))
         }
 
         func wait() async throws {
@@ -219,38 +279,83 @@ final class SaySpeech {
             }
         }
 
+        private func monitorChannel() async {
+            while true {
+                if Task.isCancelled {
+                    return
+                }
+
+                guard let activeChannel = lock.withLock({ channel }) else {
+                    return
+                }
+
+                do {
+                    if try !isBusy(activeChannel) {
+                        finish(.success(()))
+                        return
+                    }
+                } catch {
+                    finish(.failure(error))
+                    return
+                }
+
+                do {
+                    try await Task.sleep(nanoseconds: 40_000_000)
+                } catch {
+                    return
+                }
+            }
+        }
+
+        private func isBusy(_ channel: SpeechChannel) throws -> Bool {
+            var statusObject: AnyObject?
+            let status = CopySpeechProperty(channel, kSpeechStatusProperty, &statusObject)
+            guard status == noErr else {
+                throw SaySpeechError.speechManagerFailure(
+                    operation: "reading speech status",
+                    status: status
+                )
+            }
+
+            guard let statusDictionary = statusObject as? [String: Any] else {
+                return false
+            }
+
+            return statusDictionary[kSpeechStatusOutputBusy as String] as? Bool ?? false
+        }
+
         private func finish(_ result: Result<Void, Error>) {
-            let continuationToResume: CheckedContinuation<Void, Error>? = lock.withLock {
-                guard terminalResult == nil else { return nil }
+            let completionData: (
+                continuation: CheckedContinuation<Void, Error>?,
+                channel: SpeechChannel?,
+                task: Task<Void, Never>?
+            ) = lock.withLock {
+                guard terminalResult == nil else {
+                    return (nil, nil, nil)
+                }
+
                 terminalResult = result
                 running = false
 
-                let cont = continuation
-                continuation = nil
-                return cont
+                let continuation = continuation
+                self.continuation = nil
+
+                let channel = channel
+                self.channel = nil
+
+                let task = monitorTask
+                monitorTask = nil
+
+                return (continuation, channel, task)
             }
 
-            runOnMain {
-                synthesizer.delegate = nil
+            completionData.task?.cancel()
+
+            if let channel = completionData.channel {
+                _ = DisposeSpeechChannel(channel)
             }
 
-            continuationToResume?.resume(with: result)
-        }
-
-        private func runOnMain(_ action: () -> Void) {
-            if Thread.isMainThread {
-                action()
-            } else {
-                DispatchQueue.main.sync(execute: action)
-            }
-        }
-
-        func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-            finish(.success(()))
-        }
-
-        func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-            finish(.failure(SaySpeechError.cancelled))
+            completionData.continuation?.resume(with: result)
         }
     }
 
@@ -559,23 +664,18 @@ final class SaySpeech {
         voice: String?,
         rate: Int?
     ) throws -> Playback {
-        let utterance = AVSpeechUtterance(string: text)
-
-        if let voice, !voice.isEmpty {
-            guard let resolvedVoice = resolveMacOSVoice(for: voice) else {
+        let selectedVoiceSpec: VoiceSpec?
+        if let voice = voice?.trimmingCharacters(in: .whitespacesAndNewlines), !voice.isEmpty {
+            guard let resolvedVoiceSpec = resolveSpeechVoiceSpec(for: voice) else {
                 throw SaySpeechError.unavailableVoice(voice)
             }
-            utterance.voice = resolvedVoice
-        } else if let bestVoice = bestAvailableMacOSVoice(for: text) {
-            utterance.voice = bestVoice
+            selectedVoiceSpec = resolvedVoiceSpec
+        } else {
+            selectedVoiceSpec = nil
         }
 
-        if let rate {
-            utterance.rate = mapWordsPerMinuteToAVRate(rate)
-        }
-
-        let session = SpeechSession(utterance: utterance)
-        session.start()
+        let session = SpeechSession(text: text, voiceSpec: selectedVoiceSpec, rate: rate)
+        try session.start()
         return Playback(id: UUID(), controller: session)
     }
 
@@ -596,129 +696,115 @@ final class SaySpeech {
         return Playback(id: UUID(), controller: session)
     }
 
-    private func resolveMacOSVoice(for rawValue: String) -> AVSpeechSynthesisVoice? {
-        if let byIdentifier = AVSpeechSynthesisVoice(identifier: rawValue) {
-            return byIdentifier
+    private func resolveSpeechVoiceSpec(for rawValue: String) -> VoiceSpec? {
+        if let explicitSpec = parseVoiceSpecIdentifier(rawValue) {
+            return explicitSpec
         }
-
-        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalized.isEmpty else { return nil }
-
-        return AVSpeechSynthesisVoice.speechVoices().first {
-            $0.name.lowercased() == normalized
-                || $0.language.lowercased() == normalized
-                || $0.identifier.lowercased() == normalized
-        }
+        return findVoiceSpec(named: rawValue)
     }
 
-    private func bestAvailableMacOSVoice(for text: String) -> AVSpeechSynthesisVoice? {
-        let voices = AVSpeechSynthesisVoice.speechVoices()
-        guard !voices.isEmpty else { return nil }
+    private func parseVoiceSpecIdentifier(_ rawValue: String) -> VoiceSpec? {
+        let parts = rawValue.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else {
+            return nil
+        }
 
-        let preferredLanguageCodes = prioritizedLanguageCodes(for: text)
-        let rankedVoices = voices
-            .map { voice in
-                (voice: voice, score: score(voice: voice, preferredLanguageCodes: preferredLanguageCodes))
-            }
-            .sorted { lhs, rhs in
-                if lhs.score != rhs.score {
-                    return lhs.score > rhs.score
-                }
-                return lhs.voice.identifier < rhs.voice.identifier
-            }
+        guard let creator = parseUInt32(parts[0]),
+              let id = parseUInt32(parts[1]) else
+        {
+            return nil
+        }
 
-        return rankedVoices.first?.voice
+        return VoiceSpec(creator: creator, id: id)
     }
 
-    private func prioritizedLanguageCodes(for text: String) -> [String] {
-        var prioritized: [String] = []
-
-        if let detected = NLLanguageRecognizer.dominantLanguage(for: text)?.rawValue {
-            prioritized.append(detected)
+    private func parseUInt32(_ rawValue: String) -> UInt32? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
         }
 
-        prioritized.append(AVSpeechSynthesisVoice.currentLanguageCode())
-        prioritized.append(contentsOf: Locale.preferredLanguages)
-
-        var seen = Set<String>()
-        var normalized: [String] = []
-        for code in prioritized {
-            let normalizedCode = normalizeLanguageCode(code)
-            guard !normalizedCode.isEmpty else { continue }
-            guard seen.insert(normalizedCode).inserted else { continue }
-            normalized.append(normalizedCode)
+        if trimmed.hasPrefix("0x") || trimmed.hasPrefix("0X") {
+            return UInt32(trimmed.dropFirst(2), radix: 16)
         }
-        return normalized
+
+        return UInt32(trimmed)
     }
 
-    private func score(voice: AVSpeechSynthesisVoice, preferredLanguageCodes: [String]) -> Int {
-        var score = 0
-
-        switch voice.quality {
-        case .premium:
-            score += 1200
-        case .enhanced:
-            score += 800
-        default:
-            score += 400
-        }
-
-        if voice.voiceTraits.contains(.isNoveltyVoice) {
-            score -= 1200
-        } else {
-            score += 120
-        }
-
-        let identifier = voice.identifier.lowercased()
-        if identifier.contains(".eloquence.") {
-            score -= 900
-        }
-        if identifier.contains(".speech.synthesis.voice.") {
-            score -= 900
-        }
-        if identifier.contains("siri") {
-            score += 300
-        }
-
-        let voiceLanguage = normalizeLanguageCode(voice.language)
-        let voicePrimaryLanguage = primaryLanguage(from: voiceLanguage)
-
-        for (index, preferredLanguage) in preferredLanguageCodes.enumerated() {
-            let priorityWeight = max(0, 80 - (index * 10))
-            if voiceLanguage == preferredLanguage {
-                score += 350 + priorityWeight
-                break
-            }
-
-            let preferredPrimaryLanguage = primaryLanguage(from: preferredLanguage)
-            if !preferredPrimaryLanguage.isEmpty,
-               preferredPrimaryLanguage == voicePrimaryLanguage
-            {
-                score += 220 + priorityWeight
-                break
-            }
-        }
-
-        return score
-    }
-
-    private func normalizeLanguageCode(_ code: String) -> String {
-        code
-            .replacingOccurrences(of: "_", with: "-")
+    private func findVoiceSpec(named rawVoiceName: String) -> VoiceSpec? {
+        let normalizedTarget = rawVoiceName
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+        guard !normalizedTarget.isEmpty else {
+            return nil
+        }
+
+        var count: Int16 = 0
+        guard CountVoices(&count) == noErr, count > 0 else {
+            return nil
+        }
+
+        var partialMatch: VoiceSpec?
+        for index in 1 ... count {
+            var voiceSpec = VoiceSpec()
+            guard GetIndVoice(index, &voiceSpec) == noErr else {
+                continue
+            }
+            guard let voiceName = speechVoiceName(for: voiceSpec)?.lowercased() else {
+                continue
+            }
+
+            if voiceName == normalizedTarget {
+                return voiceSpec
+            }
+
+            if partialMatch == nil, voiceName.contains(normalizedTarget) {
+                partialMatch = voiceSpec
+            }
+        }
+
+        return partialMatch
     }
 
-    private func primaryLanguage(from code: String) -> String {
-        normalizeLanguageCode(code).split(separator: "-").first.map(String.init) ?? ""
+    private func speechVoiceName(for voiceSpec: VoiceSpec) -> String? {
+        var mutableVoiceSpec = voiceSpec
+        var description = VoiceDescription()
+        description.length = Int32(MemoryLayout<VoiceDescription>.size)
+
+        let status = withUnsafePointer(to: &mutableVoiceSpec) { voicePointer in
+            GetVoiceDescription(voicePointer, &description, MemoryLayout<VoiceDescription>.size)
+        }
+        guard status == noErr else {
+            return nil
+        }
+
+        let decodedName = decodePascalString(description.name)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return decodedName.isEmpty ? nil : decodedName
     }
 
-    private func mapWordsPerMinuteToAVRate(_ wordsPerMinute: Int) -> Float {
-        let clampedWordsPerMinute = min(max(wordsPerMinute, 80), 450)
-        let normalized = Float(clampedWordsPerMinute - 80) / Float(450 - 80)
+    private func decodePascalString<T>(_ value: T) -> String {
+        withUnsafeBytes(of: value) { bytes in
+            guard let first = bytes.first else {
+                return ""
+            }
 
-        return AVSpeechUtteranceMinimumSpeechRate
-            + normalized * (AVSpeechUtteranceMaximumSpeechRate - AVSpeechUtteranceMinimumSpeechRate)
+            let length = min(Int(first), bytes.count - 1)
+            guard length > 0 else {
+                return ""
+            }
+
+            let payload = bytes.dropFirst().prefix(length)
+            if let decoded = String(bytes: payload, encoding: .macOSRoman) {
+                return decoded
+            }
+            return String(decoding: payload, as: UTF8.self)
+        }
+    }
+
+    private static func mapWordsPerMinuteToSpeechManagerRate(_ wordsPerMinute: Int) -> Int32 {
+        let clampedWordsPerMinute = min(max(wordsPerMinute, 1), 0x7FF)
+        return Int32(clampedWordsPerMinute << 16)
     }
 
     private static func loadKeychainString(service: String, account: String) throws -> String? {
