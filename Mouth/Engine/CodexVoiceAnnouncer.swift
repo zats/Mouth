@@ -1,8 +1,13 @@
 import Foundation
+import FoundationModels
+import Darwin
 
 @MainActor
 final class CodexVoiceAnnouncer {
     static let pauseExternalPlaybackDefaultsKey = "mouth.pause_external_playback_while_speaking"
+    static let summarizeWithPromptDefaultsKey = "mouth.speech.summarize_with_prompt_enabled"
+    static let summarizePromptDefaultsKey = "mouth.speech.summarize_with_prompt_text"
+    static let defaultSummarizePrompt = "Summarize the message from AI assistnant into one clear sentence under 20 words. Keep only the most important point. Make message addressed from first person. If original messages is under 20 words, return unchanged."
 
     struct Item: Hashable, Sendable {
         let sessionID: String?
@@ -24,6 +29,7 @@ final class CodexVoiceAnnouncer {
     private var pendingExternalResumeTask: Task<Void, Never>?
     private var isSpeaking = false
     private var paused = false
+    private var pausedExternalPlaybackPIDs = Set<pid_t>()
 
     init() {}
 
@@ -33,6 +39,49 @@ final class CodexVoiceAnnouncer {
             return true // default enabled
         }
         return ud.bool(forKey: Self.pauseExternalPlaybackDefaultsKey)
+    }
+
+    private func shouldSummarizeBeforeSpeaking() -> Bool {
+        let ud = UserDefaults.standard
+        if ud.object(forKey: Self.summarizeWithPromptDefaultsKey) == nil {
+            return true // default enabled
+        }
+        return ud.bool(forKey: Self.summarizeWithPromptDefaultsKey)
+    }
+
+    private func activeSummaryPrompt() -> String {
+        let raw = UserDefaults.standard.string(forKey: Self.summarizePromptDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return raw.isEmpty ? Self.defaultSummarizePrompt : raw
+    }
+
+    private func textForSpeech(from item: Item) async -> String {
+        let original = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !original.isEmpty else { return item.text }
+        guard shouldSummarizeBeforeSpeaking() else { return original }
+
+        let prompt = activeSummaryPrompt()
+        guard let summarized = await summarizeWithFoundationModel(text: original, prompt: prompt) else {
+            return original
+        }
+
+        let cleaned = summarized.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? original : cleaned
+    }
+
+    private func summarizeWithFoundationModel(text: String, prompt: String) async -> String? {
+        let model = SystemLanguageModel.default
+        guard model.isAvailable else { return nil }
+
+        let session = LanguageModelSession(model: model, instructions: prompt)
+        let options = GenerationOptions(sampling: .greedy, maximumResponseTokens: 40)
+
+        do {
+            let response = try await session.respond(to: text, options: options)
+            return response.content
+        } catch {
+            return nil
+        }
     }
 
     func enqueue(_ event: AssistantMessageEvent) {
@@ -92,10 +141,12 @@ final class CodexVoiceAnnouncer {
         // Pause external playback once for the whole batch (best-effort).
         if shouldPauseExternalPlaybackWhileSpeaking(),
            !didPauseExternalPlayback,
-           SystemAudioActivity.isAnyOtherProcessRunningOutput()
+           let externalPlaybackPIDs = SystemAudioActivity.otherProcessesRunningOutput(),
+           !externalPlaybackPIDs.isEmpty
         {
             MediaKeyController.togglePlayPause()
             didPauseExternalPlayback = true
+            pausedExternalPlaybackPIDs = externalPlaybackPIDs
 
             // Give the target player a moment to react before we play our delimiter/speech.
             try? await Task.sleep(nanoseconds: 150_000_000)
@@ -121,7 +172,8 @@ final class CodexVoiceAnnouncer {
             }
 
             do {
-                let p = try speaker.play(item.text)
+                let textToSpeak = await textForSpeech(from: item)
+                let p = try speaker.play(textToSpeak)
                 currentSpeech = p
                 try await p.wait()
             } catch {
@@ -133,9 +185,24 @@ final class CodexVoiceAnnouncer {
 
     private func resumeExternalPlaybackIfNeeded() {
         guard didPauseExternalPlayback else { return }
+
+        let targetPIDs = pausedExternalPlaybackPIDs
+        pausedExternalPlaybackPIDs.removeAll()
         didPauseExternalPlayback = false
 
-        guard shouldPauseExternalPlaybackWhileSpeaking() else { return }
+        guard shouldPauseExternalPlaybackWhileSpeaking(),
+              !targetPIDs.isEmpty,
+              targetPIDs.allSatisfy(isRunningProcess)
+        else {
+            return
+        }
+
+        // Don’t resume unless we can prove no output is currently active.
+        guard let runningPIDs = SystemAudioActivity.otherProcessesRunningOutput(),
+              runningPIDs.isEmpty
+        else {
+            return
+        }
 
         // Turn off speaking first so the media-key interceptor is disabled before we resume.
         setSpeaking(false)
@@ -178,5 +245,10 @@ final class CodexVoiceAnnouncer {
             object: nil,
             userInfo: info
         )
+    }
+
+    private func isRunningProcess(_ pid: pid_t) -> Bool {
+        guard pid > 0 else { return false }
+        return kill(pid, 0) == 0
     }
 }

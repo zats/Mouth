@@ -13,6 +13,8 @@ struct SettingsView: View {
 
     @AppStorage(SaySpeech.providerDefaultsKey) private var speechProviderRaw: String = SaySpeech.Provider.macOSSay.rawValue
     @AppStorage(CodexVoiceAnnouncer.pauseExternalPlaybackDefaultsKey) private var pauseExternalPlaybackWhileSpeaking: Bool = true
+    @AppStorage(CodexVoiceAnnouncer.summarizeWithPromptDefaultsKey) private var summarizeWithPromptEnabled: Bool = true
+    @AppStorage(CodexVoiceAnnouncer.summarizePromptDefaultsKey) private var summarizePrompt: String = CodexVoiceAnnouncer.defaultSummarizePrompt
     @AppStorage(LaunchAtLoginManager.defaultsKey) private var launchAtLogin: Bool = false
     @AppStorage("mouth.auto_update_enabled") private var autoUpdateEnabled: Bool = true
     @AppStorage(StopSpeechHotkeyMode.defaultsKey) private var stopSpeechHotkeyModeRaw: String = StopSpeechHotkeyMode.mediaPlayPause.rawValue
@@ -78,7 +80,7 @@ struct SettingsView: View {
                 .tag(SettingsTab.updates)
         }
         .padding(12)
-        .frame(width: 460, height: 200, alignment: .topLeading)
+        .frame(width: 460, height: 280, alignment: .topLeading)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
             loadState()
@@ -113,6 +115,12 @@ struct SettingsView: View {
             Task { @MainActor in
                 updater.automaticallyChecksForUpdates = enabled
                 updater.automaticallyDownloadsUpdates = enabled
+            }
+        }
+        .onChange(of: summarizeWithPromptEnabled) { _, enabled in
+            guard enabled else { return }
+            if summarizePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                summarizePrompt = CodexVoiceAnnouncer.defaultSummarizePrompt
             }
         }
     }
@@ -151,6 +159,7 @@ struct SettingsView: View {
                     .disabled(testPlayback != nil)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 12)
 
                 if sagInstalled, selectedProvider == .sag {
                     ZStack(alignment: .trailing) {
@@ -177,6 +186,22 @@ struct SettingsView: View {
                         Text(sagKeyError)
                             .font(.footnote)
                             .foregroundStyle(.red)
+                    }
+                }
+
+                Toggle("Summarize with prompt", isOn: $summarizeWithPromptEnabled)
+                    .toggleStyle(.checkbox)
+
+                if summarizeWithPromptEnabled {
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextEditor(text: $summarizePrompt)
+                            .font(.body)
+                            .frame(minHeight: 68, maxHeight: 88)
+                            .padding(6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .strokeBorder(.quaternary, lineWidth: 1)
+                            )
                     }
                 }
             }
