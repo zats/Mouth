@@ -1,10 +1,9 @@
 import Foundation
 import FoundationModels
-import Darwin
 
 @MainActor
 final class CodexVoiceAnnouncer {
-    static let pauseExternalPlaybackDefaultsKey = "mouth.pause_external_playback_while_speaking"
+    static let duckAudioIfPlayingDefaultsKey = "mouth.pause_external_playback_while_speaking"
     static let summarizeWithPromptDefaultsKey = "mouth.speech.summarize_with_prompt_enabled"
     static let summarizePromptDefaultsKey = "mouth.speech.summarize_with_prompt_text"
     static let defaultSummarizePrompt = "Summarize the message from AI assistnant into one clear sentence under 15 words. Keep only the most important point. Make message addressed from first person. If original messages is under 15 words, return unchanged."
@@ -18,6 +17,7 @@ final class CodexVoiceAnnouncer {
 
     private let speaker = SaySpeech()
     private let sound = AppSound()
+    private let audioDucker = AppAudioDucker()
 
     private var queue: [Item] = []
     private var runner: Task<Void, Never>?
@@ -25,22 +25,17 @@ final class CodexVoiceAnnouncer {
     private var currentSpeech: SaySpeech.Playback?
     private var currentItem: Item?
 
-    private var didPauseExternalPlayback = false
-    private var pendingExternalResumeTask: Task<Void, Never>?
     private var isSpeaking = false
     private var paused = false
-    private var pausedExternalPlaybackPIDs = Set<pid_t>()
-    private let externalPlaybackResumeMaxAttempts = 6
-    private let externalPlaybackResumeRetryDelayNanos: UInt64 = 150_000_000
 
     init() {}
 
-    private func shouldPauseExternalPlaybackWhileSpeaking() -> Bool {
+    private func shouldDuckAudioIfPlaying() -> Bool {
         let ud = UserDefaults.standard
-        if ud.object(forKey: Self.pauseExternalPlaybackDefaultsKey) == nil {
+        if ud.object(forKey: Self.duckAudioIfPlayingDefaultsKey) == nil {
             return true // default enabled
         }
-        return ud.bool(forKey: Self.pauseExternalPlaybackDefaultsKey)
+        return ud.bool(forKey: Self.duckAudioIfPlayingDefaultsKey)
     }
 
     private func shouldSummarizeBeforeSpeaking() -> Bool {
@@ -112,7 +107,7 @@ final class CodexVoiceAnnouncer {
         runner?.cancel()
         runner = nil
 
-        resumeExternalPlaybackIfNeeded()
+        audioDucker.stop()
         setCurrentItem(nil)
         setSpeaking(false)
     }
@@ -127,12 +122,10 @@ final class CodexVoiceAnnouncer {
     private func run() async {
         defer {
             runner = nil
+            audioDucker.stop()
             setCurrentItem(nil)
             setSpeaking(false)
         }
-
-        pendingExternalResumeTask?.cancel()
-        pendingExternalResumeTask = nil
 
         if paused {
             return
@@ -140,23 +133,12 @@ final class CodexVoiceAnnouncer {
 
         setSpeaking(true)
 
-        // Pause external playback once for the whole batch (best-effort).
-        if shouldPauseExternalPlaybackWhileSpeaking(),
-           !didPauseExternalPlayback,
-           let externalPlaybackPIDs = SystemAudioActivity.otherProcessesRunningOutput(),
-           !externalPlaybackPIDs.isEmpty
-        {
-            MediaKeyController.togglePlayPause()
-            didPauseExternalPlayback = true
-            pausedExternalPlaybackPIDs = externalPlaybackPIDs
-
-            // Give the target player a moment to react before we play our delimiter/speech.
-            try? await Task.sleep(nanoseconds: 150_000_000)
+        if shouldDuckAudioIfPlaying() {
+            audioDucker.start()
         }
 
         while !Task.isCancelled {
             guard !queue.isEmpty else {
-                resumeExternalPlaybackIfNeeded()
                 return
             }
 
@@ -181,102 +163,6 @@ final class CodexVoiceAnnouncer {
             }
             currentSpeech = nil
         }
-    }
-
-    private func resumeExternalPlaybackIfNeeded() {
-        guard didPauseExternalPlayback else { return }
-
-        let targetPIDs = pausedExternalPlaybackPIDs
-        guard shouldPauseExternalPlaybackWhileSpeaking(),
-              !targetPIDs.isEmpty
-        else {
-            clearPendingExternalPlaybackState()
-            return
-        }
-
-        // Turn off speaking first so the media-key interceptor is disabled before we resume.
-        setSpeaking(false)
-
-        pendingExternalResumeTask?.cancel()
-        pendingExternalResumeTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            guard !Task.isCancelled else { return }
-            await self.tryResumeExternalPlaybackIfNeeded(targetPIDs: targetPIDs, attempt: 0)
-        }
-    }
-
-    private func tryResumeExternalPlaybackIfNeeded(targetPIDs: Set<pid_t>, attempt: Int) async {
-        guard !Task.isCancelled else { return }
-
-        // If playback targets disappeared, there is nothing to restore.
-        guard shouldPauseExternalPlaybackWhileSpeaking(),
-              didPauseExternalPlayback,
-              !targetPIDs.isEmpty
-        else {
-            clearPendingExternalPlaybackState()
-            return
-        }
-
-        let liveTargetPIDs = Set(targetPIDs.filter(isRunningProcess))
-        guard !liveTargetPIDs.isEmpty else {
-            clearPendingExternalPlaybackState()
-            return
-        }
-
-        if let runningPIDs = SystemAudioActivity.otherProcessesRunningOutput() {
-            let targetRunningPIDs = runningPIDs.intersection(liveTargetPIDs)
-            let otherRunningPIDs = runningPIDs.subtracting(liveTargetPIDs)
-
-            if !otherRunningPIDs.isEmpty {
-                // A different app is currently playing; don't interfere.
-                clearPendingExternalPlaybackState()
-                return
-            }
-
-            if !targetRunningPIDs.isEmpty && attempt < externalPlaybackResumeMaxAttempts {
-                try? await Task.sleep(nanoseconds: externalPlaybackResumeRetryDelayNanos)
-                guard !Task.isCancelled else { return }
-                await tryResumeExternalPlaybackIfNeeded(targetPIDs: liveTargetPIDs, attempt: attempt + 1)
-                return
-            }
-
-            if !targetRunningPIDs.isEmpty {
-                // If the target is still emitting output, avoid flipping it to paused.
-                clearPendingExternalPlaybackState()
-                return
-            }
-
-            completeExternalPlaybackResume()
-            return
-        }
-
-        if attempt < externalPlaybackResumeMaxAttempts {
-            try? await Task.sleep(nanoseconds: externalPlaybackResumeRetryDelayNanos)
-            guard !Task.isCancelled else { return }
-            await tryResumeExternalPlaybackIfNeeded(targetPIDs: liveTargetPIDs, attempt: attempt + 1)
-            return
-        }
-
-        // Last-resort fallback when process-level inspection is unavailable.
-        if SystemAudioActivity.isOutputDeviceRunningSomewhere() {
-            clearPendingExternalPlaybackState()
-            return
-        }
-
-        completeExternalPlaybackResume()
-    }
-
-    private func completeExternalPlaybackResume() {
-        didPauseExternalPlayback = false
-        pausedExternalPlaybackPIDs.removeAll()
-        pendingExternalResumeTask = nil
-        MediaKeyController.togglePlayPause(trackPassThrough: false)
-    }
-
-    private func clearPendingExternalPlaybackState() {
-        didPauseExternalPlayback = false
-        pausedExternalPlaybackPIDs.removeAll()
-        pendingExternalResumeTask = nil
     }
 
     private func delimiterSoundURL() -> URL {
@@ -307,10 +193,5 @@ final class CodexVoiceAnnouncer {
             object: nil,
             userInfo: info
         )
-    }
-
-    private func isRunningProcess(_ pid: pid_t) -> Bool {
-        guard pid > 0 else { return false }
-        return kill(pid, 0) == 0
     }
 }

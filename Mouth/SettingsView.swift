@@ -12,7 +12,7 @@ struct SettingsView: View {
     let updater: UpdaterProviding
 
     @AppStorage(SaySpeech.providerDefaultsKey) private var speechProviderRaw: String = SaySpeech.Provider.macOSSay.rawValue
-    @AppStorage(CodexVoiceAnnouncer.pauseExternalPlaybackDefaultsKey) private var pauseExternalPlaybackWhileSpeaking: Bool = true
+    @AppStorage(CodexVoiceAnnouncer.duckAudioIfPlayingDefaultsKey) private var duckAudioIfPlaying: Bool = true
     @AppStorage(CodexVoiceAnnouncer.summarizeWithPromptDefaultsKey) private var summarizeWithPromptEnabled: Bool = true
     @AppStorage(CodexVoiceAnnouncer.summarizePromptDefaultsKey) private var summarizePrompt: String = CodexVoiceAnnouncer.defaultSummarizePrompt
     @AppStorage(LaunchAtLoginManager.defaultsKey) private var launchAtLogin: Bool = false
@@ -134,7 +134,7 @@ struct SettingsView: View {
                 Toggle("Start at login", isOn: $launchAtLogin)
                     .toggleStyle(.checkbox)
 
-                Toggle("Pause music while speaking", isOn: $pauseExternalPlaybackWhileSpeaking)
+                Toggle("Duck audio if playing", isOn: $duckAudioIfPlaying)
                     .toggleStyle(.checkbox)
             }
         }
