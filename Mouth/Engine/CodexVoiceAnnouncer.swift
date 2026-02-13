@@ -162,13 +162,11 @@ final class CodexVoiceAnnouncer {
             setCurrentItem(item)
 
             // Delimiter sound before each spoken message.
-            if let url = delimiterSoundURL() {
-                do {
-                    let p = try sound.play(fileURL: url)
-                    try await p.wait()
-                } catch {
-                    // Non-fatal; continue to speech.
-                }
+            do {
+                let p = try sound.play(fileURL: delimiterSoundURL())
+                try await p.wait()
+            } catch {
+                fatalError("\(error)")
             }
 
             do {
@@ -217,13 +215,8 @@ final class CodexVoiceAnnouncer {
         }
     }
 
-    private func delimiterSoundURL() -> URL? {
-        [
-            Bundle.main.url(forResource: "delimiter", withExtension: "wav"),
-            Bundle.main.url(forResource: "delimiter", withExtension: "wav", subdirectory: "Sounds"),
-            Bundle.main.url(forResource: "Resources/delimiter", withExtension: "wav"),
-            Bundle.main.url(forResource: "Resources/Sounds/delimiter", withExtension: "wav")
-        ].compactMap { $0 }.first
+    private func delimiterSoundURL() -> URL {
+        Bundle.main.url(forResource: "delimiter", withExtension: "wav")!
     }
 
     private func setSpeaking(_ speaking: Bool) {

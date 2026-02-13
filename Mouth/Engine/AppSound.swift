@@ -1,13 +1,16 @@
-import AudioToolbox
+import AVFoundation
 import Foundation
 
 enum AppSoundError: Error, LocalizedError {
     case failedToLoad(underlying: Error)
+    case playbackFailed
 
     var errorDescription: String? {
         switch self {
         case let .failedToLoad(underlying):
             return "Failed to load sound: \(underlying)"
+        case .playbackFailed:
+            return "Failed to start playback"
         }
     }
 }
@@ -38,22 +41,37 @@ private actor PlaybackCompletion {
 
 /// In-process sound playback wrapper (no CLI process spawn).
 ///
-/// Uses `AudioToolbox` system sound IDs and caches the loaded sound to avoid
-/// per-play disposal timing issues.
+/// Uses `AVAudioPlayer` for reliable sound playback + completion signaling.
 final class AppSound {
     final class Playback: @unchecked Sendable {
         private let completion = PlaybackCompletion()
+        private let player: AVAudioPlayer
+        private let delegate: PlaybackDelegate
 
-        func finish(_ result: Result<Void, Error>) async {
+        fileprivate init(player: AVAudioPlayer) {
+            self.player = player
+            self.delegate = PlaybackDelegate(completion: completion)
+            self.player.delegate = self.delegate
+        }
+
+        fileprivate func start() throws {
+            guard player.play() else {
+                throw AppSoundError.playbackFailed
+            }
+        }
+
+        fileprivate func finish(_ result: Result<Void, Error>) async {
             await completion.finish(result)
         }
 
         func cancel() {
+            player.stop()
             Task {
                 await completion.finish(.failure(CancellationError()))
             }
         }
 
+        /// Waits for playback to finish.
         func wait() async throws {
             try await withTaskCancellationHandler {
                 try await completion.wait()
@@ -65,38 +83,34 @@ final class AppSound {
         }
     }
 
-    private var cachedURL: URL?
-    private var cachedSoundID: SystemSoundID = 0
+    private final class PlaybackDelegate: NSObject, AVAudioPlayerDelegate {
+        private let completion: PlaybackCompletion
 
-    deinit {
-        if cachedSoundID != 0 {
-            AudioServicesDisposeSystemSoundID(cachedSoundID)
+        init(completion: PlaybackCompletion) {
+            self.completion = completion
+        }
+
+        func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+            Task {
+                await completion.finish(.success(()))
+            }
+        }
+
+        func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: (any Error)?) {
+            let result: Result<Void, Error> = .failure(error ?? AppSoundError.playbackFailed)
+            Task {
+                await completion.finish(result)
+            }
         }
     }
 
     func play(fileURL: URL) throws -> Playback {
-        if cachedURL != fileURL || cachedSoundID == 0 {
-            if cachedSoundID != 0 {
-                AudioServicesDisposeSystemSoundID(cachedSoundID)
-                cachedSoundID = 0
-            }
+        let player = try AVAudioPlayer(contentsOf: fileURL)
+        player.prepareToPlay()
+        player.currentTime = 0
 
-            var sid: SystemSoundID = 0
-            let st = AudioServicesCreateSystemSoundID(fileURL as CFURL, &sid)
-            guard st == kAudioServicesNoError, sid != 0 else {
-                throw AppSoundError.failedToLoad(underlying: NSError(domain: NSOSStatusErrorDomain, code: Int(st)))
-            }
-
-            cachedURL = fileURL
-            cachedSoundID = sid
-        }
-
-        let playback = Playback()
-        AudioServicesPlaySystemSoundWithCompletion(cachedSoundID) {
-            Task {
-                await playback.finish(.success(()))
-            }
-        }
+        let playback = Playback(player: player)
+        try playback.start()
         return playback
     }
 }
