@@ -6,7 +6,6 @@ import Security
 enum SaySpeechError: Error, LocalizedError {
     case cancelled
     case emptyText
-    case unavailableVoice(String)
     case audioPlaybackFailed
     case missingElevenLabsAPIKey
     case elevenLabsNoVoicesAvailable
@@ -20,8 +19,6 @@ enum SaySpeechError: Error, LocalizedError {
             return "Speech playback was cancelled"
         case .emptyText:
             return "Speech text was empty"
-        case let .unavailableVoice(voice):
-            return "Requested voice is unavailable: \(voice)"
         case .audioPlaybackFailed:
             return "Failed to start audio playback"
         case .missingElevenLabsAPIKey:
@@ -656,25 +653,14 @@ final class SaySpeech {
             return playElevenLabs(trimmed, voice: voice, rate: rate, apiKey: apiKey)
         }
 
-        return try playMacOS(trimmed, voice: voice, rate: rate)
+        return try playMacOS(trimmed, rate: rate)
     }
 
     private func playMacOS(
         _ text: String,
-        voice: String?,
         rate: Int?
     ) throws -> Playback {
-        let selectedVoiceSpec: VoiceSpec?
-        if let voice = voice?.trimmingCharacters(in: .whitespacesAndNewlines), !voice.isEmpty {
-            guard let resolvedVoiceSpec = resolveSpeechVoiceSpec(for: voice) else {
-                throw SaySpeechError.unavailableVoice(voice)
-            }
-            selectedVoiceSpec = resolvedVoiceSpec
-        } else {
-            selectedVoiceSpec = nil
-        }
-
-        let session = SpeechSession(text: text, voiceSpec: selectedVoiceSpec, rate: rate)
+        let session = SpeechSession(text: text, voiceSpec: nil, rate: rate)
         try session.start()
         return Playback(id: UUID(), controller: session)
     }
@@ -694,112 +680,6 @@ final class SaySpeech {
         )
         session.start()
         return Playback(id: UUID(), controller: session)
-    }
-
-    private func resolveSpeechVoiceSpec(for rawValue: String) -> VoiceSpec? {
-        if let explicitSpec = parseVoiceSpecIdentifier(rawValue) {
-            return explicitSpec
-        }
-        return findVoiceSpec(named: rawValue)
-    }
-
-    private func parseVoiceSpecIdentifier(_ rawValue: String) -> VoiceSpec? {
-        let parts = rawValue.split(separator: ":", maxSplits: 1).map(String.init)
-        guard parts.count == 2 else {
-            return nil
-        }
-
-        guard let creator = parseUInt32(parts[0]),
-              let id = parseUInt32(parts[1]) else
-        {
-            return nil
-        }
-
-        return VoiceSpec(creator: creator, id: id)
-    }
-
-    private func parseUInt32(_ rawValue: String) -> UInt32? {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return nil
-        }
-
-        if trimmed.hasPrefix("0x") || trimmed.hasPrefix("0X") {
-            return UInt32(trimmed.dropFirst(2), radix: 16)
-        }
-
-        return UInt32(trimmed)
-    }
-
-    private func findVoiceSpec(named rawVoiceName: String) -> VoiceSpec? {
-        let normalizedTarget = rawVoiceName
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        guard !normalizedTarget.isEmpty else {
-            return nil
-        }
-
-        var count: Int16 = 0
-        guard CountVoices(&count) == noErr, count > 0 else {
-            return nil
-        }
-
-        var partialMatch: VoiceSpec?
-        for index in 1 ... count {
-            var voiceSpec = VoiceSpec()
-            guard GetIndVoice(index, &voiceSpec) == noErr else {
-                continue
-            }
-            guard let voiceName = speechVoiceName(for: voiceSpec)?.lowercased() else {
-                continue
-            }
-
-            if voiceName == normalizedTarget {
-                return voiceSpec
-            }
-
-            if partialMatch == nil, voiceName.contains(normalizedTarget) {
-                partialMatch = voiceSpec
-            }
-        }
-
-        return partialMatch
-    }
-
-    private func speechVoiceName(for voiceSpec: VoiceSpec) -> String? {
-        var mutableVoiceSpec = voiceSpec
-        var description = VoiceDescription()
-        description.length = Int32(MemoryLayout<VoiceDescription>.size)
-
-        let status = withUnsafePointer(to: &mutableVoiceSpec) { voicePointer in
-            GetVoiceDescription(voicePointer, &description, MemoryLayout<VoiceDescription>.size)
-        }
-        guard status == noErr else {
-            return nil
-        }
-
-        let decodedName = decodePascalString(description.name)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return decodedName.isEmpty ? nil : decodedName
-    }
-
-    private func decodePascalString<T>(_ value: T) -> String {
-        withUnsafeBytes(of: value) { bytes in
-            guard let first = bytes.first else {
-                return ""
-            }
-
-            let length = min(Int(first), bytes.count - 1)
-            guard length > 0 else {
-                return ""
-            }
-
-            let payload = bytes.dropFirst().prefix(length)
-            if let decoded = String(bytes: payload, encoding: .macOSRoman) {
-                return decoded
-            }
-            return String(decoding: payload, as: UTF8.self)
-        }
     }
 
     private static func mapWordsPerMinuteToSpeechManagerRate(_ wordsPerMinute: Int) -> Int32 {
