@@ -38,15 +38,17 @@ enum MediaKeyController {
 
     // Uses the system-defined event mechanism (same path as media keys).
     // Best-effort: posting can be ignored depending on system/security state.
-    static func togglePlayPause() {
-        postMediaKey(key: Int32(NX_KEYTYPE_PLAY))
+    static func togglePlayPause(trackPassThrough: Bool = true) {
+        postMediaKey(key: Int32(NX_KEYTYPE_PLAY), trackPassThrough: trackPassThrough)
     }
 
-    private static func postMediaKey(key: Int32) {
+    private static func postMediaKey(key: Int32, trackPassThrough: Bool) {
         postingLock.lock()
         postingSyntheticMediaKeyCount += 1
-        passThroughUntilAbsoluteTime = max(passThroughUntilAbsoluteTime, CFAbsoluteTimeGetCurrent() + 1.0)
-        if key == Int32(NX_KEYTYPE_PLAY) {
+        if trackPassThrough {
+            passThroughUntilAbsoluteTime = max(passThroughUntilAbsoluteTime, CFAbsoluteTimeGetCurrent() + 1.0)
+        }
+        if trackPassThrough, key == Int32(NX_KEYTYPE_PLAY) {
             // We emit keyDown + keyUp.
             pendingPlayPausePassThroughEvents += 2
         }

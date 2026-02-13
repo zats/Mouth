@@ -7,7 +7,7 @@ final class CodexVoiceAnnouncer {
     static let pauseExternalPlaybackDefaultsKey = "mouth.pause_external_playback_while_speaking"
     static let summarizeWithPromptDefaultsKey = "mouth.speech.summarize_with_prompt_enabled"
     static let summarizePromptDefaultsKey = "mouth.speech.summarize_with_prompt_text"
-    static let defaultSummarizePrompt = "Summarize the message from AI assistnant into one clear sentence under 20 words. Keep only the most important point. Make message addressed from first person. If original messages is under 20 words, return unchanged."
+    static let defaultSummarizePrompt = "Summarize the message from AI assistnant into one clear sentence under 15 words. Keep only the most important point. Make message addressed from first person. If original messages is under 15 words, return unchanged."
 
     struct Item: Hashable, Sendable {
         let sessionID: String?
@@ -30,6 +30,8 @@ final class CodexVoiceAnnouncer {
     private var isSpeaking = false
     private var paused = false
     private var pausedExternalPlaybackPIDs = Set<pid_t>()
+    private let externalPlaybackResumeMaxAttempts = 6
+    private let externalPlaybackResumeRetryDelayNanos: UInt64 = 150_000_000
 
     init() {}
 
@@ -70,7 +72,7 @@ final class CodexVoiceAnnouncer {
     }
 
     private func summarizeWithFoundationModel(text: String, prompt: String) async -> String? {
-        let model = SystemLanguageModel.default
+        let model = SystemLanguageModel(useCase: .general, guardrails: .permissiveContentTransformations)
         guard model.isAvailable else { return nil }
 
         let session = LanguageModelSession(model: model, instructions: prompt)
@@ -185,20 +187,10 @@ final class CodexVoiceAnnouncer {
         guard didPauseExternalPlayback else { return }
 
         let targetPIDs = pausedExternalPlaybackPIDs
-        pausedExternalPlaybackPIDs.removeAll()
-        didPauseExternalPlayback = false
-
         guard shouldPauseExternalPlaybackWhileSpeaking(),
-              !targetPIDs.isEmpty,
-              targetPIDs.allSatisfy(isRunningProcess)
+              !targetPIDs.isEmpty
         else {
-            return
-        }
-
-        // Don’t resume unless we can prove no output is currently active.
-        guard let runningPIDs = SystemAudioActivity.otherProcessesRunningOutput(),
-              runningPIDs.isEmpty
-        else {
+            clearPendingExternalPlaybackState()
             return
         }
 
@@ -207,12 +199,84 @@ final class CodexVoiceAnnouncer {
 
         pendingExternalResumeTask?.cancel()
         pendingExternalResumeTask = Task { @MainActor [weak self] in
-            await Task.yield()
             guard let self else { return }
             guard !Task.isCancelled else { return }
-            MediaKeyController.togglePlayPause()
-            self.pendingExternalResumeTask = nil
+            await self.tryResumeExternalPlaybackIfNeeded(targetPIDs: targetPIDs, attempt: 0)
         }
+    }
+
+    private func tryResumeExternalPlaybackIfNeeded(targetPIDs: Set<pid_t>, attempt: Int) async {
+        guard !Task.isCancelled else { return }
+
+        // If playback targets disappeared, there is nothing to restore.
+        guard shouldPauseExternalPlaybackWhileSpeaking(),
+              didPauseExternalPlayback,
+              !targetPIDs.isEmpty
+        else {
+            clearPendingExternalPlaybackState()
+            return
+        }
+
+        let liveTargetPIDs = Set(targetPIDs.filter(isRunningProcess))
+        guard !liveTargetPIDs.isEmpty else {
+            clearPendingExternalPlaybackState()
+            return
+        }
+
+        if let runningPIDs = SystemAudioActivity.otherProcessesRunningOutput() {
+            let targetRunningPIDs = runningPIDs.intersection(liveTargetPIDs)
+            let otherRunningPIDs = runningPIDs.subtracting(liveTargetPIDs)
+
+            if !otherRunningPIDs.isEmpty {
+                // A different app is currently playing; don't interfere.
+                clearPendingExternalPlaybackState()
+                return
+            }
+
+            if !targetRunningPIDs.isEmpty && attempt < externalPlaybackResumeMaxAttempts {
+                try? await Task.sleep(nanoseconds: externalPlaybackResumeRetryDelayNanos)
+                guard !Task.isCancelled else { return }
+                await tryResumeExternalPlaybackIfNeeded(targetPIDs: liveTargetPIDs, attempt: attempt + 1)
+                return
+            }
+
+            if !targetRunningPIDs.isEmpty {
+                // If the target is still emitting output, avoid flipping it to paused.
+                clearPendingExternalPlaybackState()
+                return
+            }
+
+            completeExternalPlaybackResume()
+            return
+        }
+
+        if attempt < externalPlaybackResumeMaxAttempts {
+            try? await Task.sleep(nanoseconds: externalPlaybackResumeRetryDelayNanos)
+            guard !Task.isCancelled else { return }
+            await tryResumeExternalPlaybackIfNeeded(targetPIDs: liveTargetPIDs, attempt: attempt + 1)
+            return
+        }
+
+        // Last-resort fallback when process-level inspection is unavailable.
+        if SystemAudioActivity.isOutputDeviceRunningSomewhere() {
+            clearPendingExternalPlaybackState()
+            return
+        }
+
+        completeExternalPlaybackResume()
+    }
+
+    private func completeExternalPlaybackResume() {
+        didPauseExternalPlayback = false
+        pausedExternalPlaybackPIDs.removeAll()
+        pendingExternalResumeTask = nil
+        MediaKeyController.togglePlayPause(trackPassThrough: false)
+    }
+
+    private func clearPendingExternalPlaybackState() {
+        didPauseExternalPlayback = false
+        pausedExternalPlaybackPIDs.removeAll()
+        pendingExternalResumeTask = nil
     }
 
     private func delimiterSoundURL() -> URL {
