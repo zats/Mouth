@@ -11,7 +11,8 @@ struct SettingsView: View {
     @ObservedObject var model: CodexSessionsViewModel
     let updater: UpdaterProviding
 
-    @AppStorage(SaySpeech.providerDefaultsKey) private var speechProviderRaw: String = SaySpeech.Provider.macOSSay.rawValue
+    @AppStorage(SaySpeech.providerDefaultsKey) private var speechProviderRaw: String = SaySpeech.Provider.macOS.rawValue
+    @AppStorage(SaySpeech.elevenLabsVoiceDefaultsKey) private var elevenLabsVoiceID: String = ""
     @AppStorage(CodexVoiceAnnouncer.duckAudioIfPlayingDefaultsKey) private var duckAudioIfPlaying: Bool = true
     @AppStorage(CodexVoiceAnnouncer.summarizeWithPromptDefaultsKey) private var summarizeWithPromptEnabled: Bool = true
     @AppStorage(CodexVoiceAnnouncer.summarizePromptDefaultsKey) private var summarizePrompt: String = CodexVoiceAnnouncer.defaultSummarizePrompt
@@ -22,11 +23,12 @@ struct SettingsView: View {
     @State private var updaterStatusMessage: String = ""
     @State private var isCheckingForUpdates: Bool = false
 
-    @State private var sagAPIKeyDraft: String = ""
-    @State private var sagHasAPIKey: Bool = false
-    @State private var sagKeyError: String?
+    @State private var elevenLabsAPIKeyDraft: String = ""
+    @State private var elevenLabsHasAPIKey: Bool = false
+    @State private var elevenLabsKeyError: String?
     @State private var didLoadKey = false
     @State private var saveTask: Task<Void, Never>?
+    @State private var testVoiceError: String?
 
     @State private var testPlayback: SaySpeech.Playback?
     @State private var selectedTab: SettingsTab = .general
@@ -53,12 +55,8 @@ struct SettingsView: View {
         )
     }
 
-    private var sagInstalled: Bool {
-        SaySpeech.isSAGInstalled()
-    }
-
     private var selectedProvider: SaySpeech.Provider {
-        SaySpeech.Provider(rawValue: speechProviderRaw) ?? .macOSSay
+        SaySpeech.Provider(rawValue: speechProviderRaw) ?? .macOS
     }
 
     var body: some View {
@@ -105,8 +103,19 @@ struct SettingsView: View {
                 isCheckingForUpdates = false
             }
         }
-        .onChange(of: sagAPIKeyDraft) { _, _ in
-            persistSAGAPIKeySoon()
+        .onChange(of: elevenLabsAPIKeyDraft) { _, _ in
+            persistElevenLabsAPIKeySoon()
+        }
+        .onChange(of: speechProviderRaw) { _, value in
+            guard let provider = SaySpeech.Provider(rawValue: value) else {
+                speechProviderRaw = SaySpeech.Provider.macOS.rawValue
+                SaySpeech.setPreferredProvider(.macOS)
+                return
+            }
+            SaySpeech.setPreferredProvider(provider)
+        }
+        .onChange(of: elevenLabsVoiceID) { _, value in
+            SaySpeech.setPreferredElevenLabsVoiceID(value)
         }
         .onChange(of: launchAtLogin) { _, enabled in
             LaunchAtLoginManager.setEnabled(enabled)
@@ -145,10 +154,8 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
                     Picker("Engine", selection: $speechProviderRaw) {
-                        Text(SaySpeech.Provider.macOSSay.displayName).tag(SaySpeech.Provider.macOSSay.rawValue)
-                        Text(SaySpeech.Provider.sag.displayName)
-                            .tag(SaySpeech.Provider.sag.rawValue)
-                            .disabled(!sagInstalled)
+                        Text(SaySpeech.Provider.macOS.displayName).tag(SaySpeech.Provider.macOS.rawValue)
+                        Text(SaySpeech.Provider.elevenLabs.displayName).tag(SaySpeech.Provider.elevenLabs.rawValue)
                     }
 
                     Button {
@@ -161,15 +168,15 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, 12)
 
-                if sagInstalled, selectedProvider == .sag {
+                if selectedProvider == .elevenLabs {
                     ZStack(alignment: .trailing) {
-                        SecureField("ElevenLabs API key", text: $sagAPIKeyDraft)
+                        SecureField("ElevenLabs API key", text: $elevenLabsAPIKeyDraft)
                             .textFieldStyle(.roundedBorder)
 
-                        if sagHasAPIKey {
+                        if elevenLabsHasAPIKey {
                             Button {
-                                sagAPIKeyDraft = ""
-                                persistSAGAPIKeySoon()
+                                elevenLabsAPIKeyDraft = ""
+                                persistElevenLabsAPIKeySoon()
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .foregroundStyle(.secondary)
@@ -182,11 +189,23 @@ struct SettingsView: View {
                         }
                     }
 
-                    if let sagKeyError {
-                        Text(sagKeyError)
+                    TextField("Voice ID (optional)", text: $elevenLabsVoiceID)
+                        .textFieldStyle(.roundedBorder)
+                    Text("If empty, uses the first available ElevenLabs voice.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    if let elevenLabsKeyError {
+                        Text(elevenLabsKeyError)
                             .font(.footnote)
                             .foregroundStyle(.red)
                     }
+                }
+
+                if let testVoiceError {
+                    Text(testVoiceError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
                 }
 
                 Toggle("Summarize with prompt", isOn: $summarizeWithPromptEnabled)
@@ -281,31 +300,34 @@ struct SettingsView: View {
 
     private func loadState() {
         didLoadKey = false
-        sagKeyError = nil
+        elevenLabsKeyError = nil
+        testVoiceError = nil
 
-        let key = (try? SaySpeech.loadSAGAPIKey()) ?? ""
-        sagAPIKeyDraft = key
-        sagHasAPIKey = !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        speechProviderRaw = SaySpeech.preferredProvider().rawValue
+        SaySpeech.setPreferredElevenLabsVoiceID(elevenLabsVoiceID)
+
+        let key = (try? SaySpeech.loadElevenLabsAPIKey()) ?? ""
+        elevenLabsAPIKeyDraft = key
+        elevenLabsHasAPIKey = !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         didLoadKey = true
     }
 
-    private func persistSAGAPIKeySoon() {
+    private func persistElevenLabsAPIKeySoon() {
         guard didLoadKey else { return }
 
         saveTask?.cancel()
 
-        // Debounce to avoid hammering Keychain on each keystroke.
-        let value = sagAPIKeyDraft
+        let value = elevenLabsAPIKeyDraft
         saveTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 350_000_000)
             if Task.isCancelled { return }
 
-            sagKeyError = nil
+            elevenLabsKeyError = nil
             do {
-                try SaySpeech.setSAGAPIKey(value)
-                sagHasAPIKey = !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                try SaySpeech.setElevenLabsAPIKey(value)
+                elevenLabsHasAPIKey = !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             } catch {
-                sagKeyError = "Couldn't save API key."
+                elevenLabsKeyError = "Couldn't save API key."
             }
         }
     }
@@ -320,6 +342,13 @@ struct SettingsView: View {
         // Cancel any in-flight test.
         testPlayback?.cancel()
         testPlayback = nil
+        testVoiceError = nil
+
+        // Force immediate provider/voice settings for this test press.
+        SaySpeech.setPreferredProvider(selectedProvider)
+        if selectedProvider == .elevenLabs {
+            SaySpeech.setPreferredElevenLabsVoiceID(elevenLabsVoiceID)
+        }
 
         let prompt = Self.testVoicePrompts.randomElement() ?? "Mouth speaking, how can I help?"
         do {
@@ -327,7 +356,7 @@ struct SettingsView: View {
             testPlayback = playback
             try await playback.wait()
         } catch {
-            // Keep UI quiet; this is a best-effort test.
+            testVoiceError = error.localizedDescription
         }
         testPlayback = nil
     }

@@ -1,140 +1,145 @@
+import AVFoundation
 import Foundation
+import NaturalLanguage
 import Security
 
 enum SaySpeechError: Error, LocalizedError {
-    case failedToStart(underlying: Error)
-    case terminated(status: Int32)
-    case textEncodingFailed
-    case failedToWriteTempFile(underlying: Error)
+    case cancelled
+    case emptyText
+    case unavailableVoice(String)
+    case audioPlaybackFailed
+    case missingElevenLabsAPIKey
+    case elevenLabsNoVoicesAvailable
+    case elevenLabsRequestFailed(statusCode: Int, message: String)
+    case invalidElevenLabsResponse
 
     var errorDescription: String? {
         switch self {
-        case let .failedToStart(underlying):
-            return "Failed to start speech command: \(underlying)"
-        case let .terminated(status):
-            return "Speech command exited with status \(status)"
-        case .textEncodingFailed:
-            return "Failed to encode text for speech wrapper"
-        case let .failedToWriteTempFile(underlying):
-            return "Failed to write temp speech text file: \(underlying)"
+        case .cancelled:
+            return "Speech playback was cancelled"
+        case .emptyText:
+            return "Speech text was empty"
+        case let .unavailableVoice(voice):
+            return "Requested voice is unavailable: \(voice)"
+        case .audioPlaybackFailed:
+            return "Failed to start audio playback"
+        case .missingElevenLabsAPIKey:
+            return "Missing ElevenLabs API key"
+        case .elevenLabsNoVoicesAvailable:
+            return "No ElevenLabs voices are available for this account"
+        case let .elevenLabsRequestFailed(statusCode, message):
+            return "ElevenLabs request failed (\(statusCode)): \(message)"
+        case .invalidElevenLabsResponse:
+            return "Invalid response from ElevenLabs"
         }
     }
 }
 
-/// Wrapper around either macOS `/usr/bin/say` or `sag` (if installed and selected).
-///
-/// Usage:
-/// ```swift
-/// let speaker = SaySpeech()
-/// let playback = try speaker.play("Hello")
-/// // ... later
-/// try await playback.wait()
-/// // or cancel
-/// playback.cancel()
-/// ```
+/// Wrapper around first-party macOS speech synthesis and native ElevenLabs HTTP TTS.
 final class SaySpeech {
     enum Provider: String, CaseIterable, Identifiable {
-        case macOSSay = "macos_say"
-        case sag = "sag"
+        case macOS = "macos_speech"
+        case elevenLabs = "elevenlabs"
 
         var id: String { rawValue }
 
         var displayName: String {
             switch self {
-            case .macOSSay:
-                return "say - default"
-            case .sag:
-                return "sag - ElevenLabs"
+            case .macOS:
+                return "macOS speech"
+            case .elevenLabs:
+                return "ElevenLabs"
             }
         }
     }
 
     static let providerDefaultsKey = "mouth.speech.provider"
+    static let elevenLabsVoiceDefaultsKey = "mouth.speech.elevenlabs.voice_id"
+
+    private static let elevenLabsBaseURL = URL(string: "https://api.elevenlabs.io")!
+    private static let elevenLabsDefaultModelID = "eleven_v3"
+    private static let elevenLabsDefaultOutputFormat = "mp3_44100_128"
+    private static let elevenLabsDefaultWPM = 175
+
+    private static let keychainService = "com.zats.Mouth"
+    private static let elevenLabsAPIKeyAccount = "elevenlabs-api-key"
+    private static let legacySAGAPIKeyAccount = "sag-elevenlabs-api-key"
+
+    private static let defaultVoiceCacheLock = NSLock()
+    private static var cachedDefaultElevenLabsVoiceID: String?
 
     static func preferredProvider() -> Provider {
         let raw = UserDefaults.standard.string(forKey: providerDefaultsKey)
-        return Provider(rawValue: raw ?? "") ?? .macOSSay
+        if let provider = Provider(rawValue: raw ?? "") {
+            return provider
+        }
+
+        switch raw {
+        case "sag":
+            return .elevenLabs
+        case "macos_say":
+            return .macOS
+        default:
+            return .macOS
+        }
     }
 
     static func setPreferredProvider(_ provider: Provider) {
         UserDefaults.standard.set(provider.rawValue, forKey: providerDefaultsKey)
     }
 
-    static func isSAGInstalled() -> Bool {
-        sagExecutableURL() != nil
+    static func preferredElevenLabsVoiceID() -> String? {
+        let raw = UserDefaults.standard.string(forKey: elevenLabsVoiceDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return raw.isEmpty ? nil : raw
     }
 
-    static func hasSAGAPIKey() -> Bool {
-        (try? loadSAGAPIKey()) != nil
+    static func setPreferredElevenLabsVoiceID(_ voiceID: String?) {
+        let trimmed = voiceID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: elevenLabsVoiceDefaultsKey)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: elevenLabsVoiceDefaultsKey)
+        }
+        defaultVoiceCacheLock.withLock {
+            cachedDefaultElevenLabsVoiceID = nil
+        }
     }
 
-    static func setSAGAPIKey(_ key: String?) throws {
+    static func hasElevenLabsAPIKey() -> Bool {
+        (try? loadElevenLabsAPIKey()) != nil
+    }
+
+    static func setElevenLabsAPIKey(_ key: String?) throws {
         let trimmed = key?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = (trimmed?.isEmpty ?? true) ? nil : trimmed
         try upsertKeychainString(
-            (trimmed?.isEmpty ?? true) ? nil : trimmed,
+            value,
             service: keychainService,
-            account: sagAPIKeyAccount
+            account: elevenLabsAPIKeyAccount
         )
+
+        if value == nil {
+            try? upsertKeychainString(nil, service: keychainService, account: legacySAGAPIKeyAccount)
+        }
     }
 
-    // MARK: - Playback
+    // Internal so Settings UI can display whether a key exists.
+    static func loadElevenLabsAPIKey() throws -> String? {
+        if let key = try loadKeychainString(service: keychainService, account: elevenLabsAPIKeyAccount) {
+            return key
+        }
+        return try loadKeychainString(service: keychainService, account: legacySAGAPIKeyAccount)
+    }
+
     final class Playback: @unchecked Sendable {
         let id: UUID
 
-        private let process: Process
-        private let cleanup: Cleanup
-        private var terminationTask: Task<Int32, Never>?
+        private let controller: any PlaybackController
 
-        private final class Cleanup: @unchecked Sendable {
-            private nonisolated let lock = NSLock()
-            private nonisolated(unsafe) var lifetimeWriteHandle: FileHandle?
-            private nonisolated(unsafe) var cleanupURLs: [URL]
-
-            init(lifetimeWriteHandle: FileHandle?, cleanupURLs: [URL]) {
-                self.lifetimeWriteHandle = lifetimeWriteHandle
-                self.cleanupURLs = cleanupURLs
-            }
-
-            nonisolated func close() {
-                let handleAndURLs: (FileHandle?, [URL]) = lock.withLock {
-                    let h = lifetimeWriteHandle
-                    lifetimeWriteHandle = nil
-
-                    let urls = cleanupURLs
-                    cleanupURLs.removeAll()
-                    return (h, urls)
-                }
-
-                if let h = handleAndURLs.0 {
-                    try? h.close()
-                }
-
-                for url in handleAndURLs.1 {
-                    try? FileManager.default.removeItem(at: url)
-                }
-            }
-        }
-
-        fileprivate init(
-            id: UUID,
-            process: Process,
-            lifetimeWriteHandle: FileHandle?,
-            cleanupURLs: [URL] = []
-        ) {
+        fileprivate init(id: UUID, controller: any PlaybackController) {
             self.id = id
-            self.process = process
-            self.cleanup = Cleanup(lifetimeWriteHandle: lifetimeWriteHandle, cleanupURLs: cleanupURLs)
-
-            let task = Task {
-                await withCheckedContinuation { (cont: CheckedContinuation<Int32, Never>) in
-                    let cleanup = self.cleanup
-                    process.terminationHandler = { p in
-                        cleanup.close()
-                        cont.resume(returning: p.terminationStatus)
-                    }
-                }
-            }
-            terminationTask = task
+            self.controller = controller
         }
 
         deinit {
@@ -142,164 +147,578 @@ final class SaySpeech {
         }
 
         var isRunning: Bool {
-            process.isRunning
+            controller.isRunning
         }
 
         func cancel() {
-            closeLifetimeHandle()
-            guard process.isRunning else { return }
-            process.terminate()
+            controller.cancel()
         }
 
-        /// Waits for `/usr/bin/say` to exit.
         func wait() async throws {
-            guard let terminationTask else { return }
-            let status = await terminationTask.value
-            if status != 0 {
-                throw SaySpeechError.terminated(status: status)
+            try await controller.wait()
+        }
+    }
+
+    fileprivate protocol PlaybackController: AnyObject {
+        var isRunning: Bool { get }
+        func cancel()
+        func wait() async throws
+    }
+
+    fileprivate final class SpeechSession: NSObject, AVSpeechSynthesizerDelegate, PlaybackController, @unchecked Sendable {
+        private let synthesizer = AVSpeechSynthesizer()
+        private let utterance: AVSpeechUtterance
+
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Error>?
+        private var terminalResult: Result<Void, Error>?
+        private var running = false
+
+        init(utterance: AVSpeechUtterance) {
+            self.utterance = utterance
+            super.init()
+            synthesizer.delegate = self
+        }
+
+        var isRunning: Bool {
+            lock.withLock { running }
+        }
+
+        func start() {
+            lock.withLock {
+                running = true
+            }
+
+            runOnMain {
+                synthesizer.speak(utterance)
             }
         }
 
-        private func closeLifetimeHandle() {
-            cleanup.close()
+        func cancel() {
+            let shouldStop = lock.withLock { running }
+            guard shouldStop else { return }
+
+            runOnMain {
+                _ = synthesizer.stopSpeaking(at: .immediate)
+            }
+        }
+
+        func wait() async throws {
+            try await withCheckedThrowingContinuation { cont in
+                let immediate: Result<Void, Error>? = lock.withLock {
+                    if let terminalResult {
+                        return terminalResult
+                    }
+                    continuation = cont
+                    return nil
+                }
+
+                if let immediate {
+                    cont.resume(with: immediate)
+                }
+            }
+        }
+
+        private func finish(_ result: Result<Void, Error>) {
+            let continuationToResume: CheckedContinuation<Void, Error>? = lock.withLock {
+                guard terminalResult == nil else { return nil }
+                terminalResult = result
+                running = false
+
+                let cont = continuation
+                continuation = nil
+                return cont
+            }
+
+            runOnMain {
+                synthesizer.delegate = nil
+            }
+
+            continuationToResume?.resume(with: result)
+        }
+
+        private func runOnMain(_ action: () -> Void) {
+            if Thread.isMainThread {
+                action()
+            } else {
+                DispatchQueue.main.sync(execute: action)
+            }
+        }
+
+        func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+            finish(.success(()))
+        }
+
+        func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+            finish(.failure(SaySpeechError.cancelled))
         }
     }
 
-    private func writeTempTextFile(_ text: String) throws -> URL {
-        let fm = FileManager.default
-        let dir = fm.temporaryDirectory.appendingPathComponent("Mouth", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    fileprivate final class ElevenLabsSession: NSObject, AVAudioPlayerDelegate, PlaybackController, @unchecked Sendable {
+        private struct VoicesResponse: Decodable {
+            struct Voice: Decodable {
+                let voice_id: String
+                let name: String
+            }
 
-        let url = dir.appendingPathComponent("speech-\(UUID().uuidString).txt")
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-        } catch {
-            throw SaySpeechError.failedToWriteTempFile(underlying: error)
+            let voices: [Voice]
         }
-        return url
+
+        private struct TTSRequestPayload: Encodable {
+            struct VoiceSettings: Encodable {
+                let speed: Double
+            }
+
+            let text: String
+            let model_id: String
+            let output_format: String
+            let voice_settings: VoiceSettings
+        }
+
+        private let text: String
+        private let voiceHint: String?
+        private let wordsPerMinute: Int?
+        private let apiKey: String
+        private let preferredVoiceID: String?
+        private let session: URLSession
+
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Error>?
+        private var terminalResult: Result<Void, Error>?
+        private var running = false
+        private var requestTask: Task<Void, Never>?
+        private var player: AVAudioPlayer?
+
+        init(
+            text: String,
+            voiceHint: String?,
+            wordsPerMinute: Int?,
+            apiKey: String,
+            preferredVoiceID: String?,
+            session: URLSession = .shared
+        ) {
+            self.text = text
+            self.voiceHint = voiceHint
+            self.wordsPerMinute = wordsPerMinute
+            self.apiKey = apiKey
+            self.preferredVoiceID = preferredVoiceID
+            self.session = session
+        }
+
+        var isRunning: Bool {
+            lock.withLock { running }
+        }
+
+        func start() {
+            lock.withLock {
+                running = true
+            }
+
+            requestTask = Task {
+                await performRequest()
+            }
+        }
+
+        func cancel() {
+            let (task, player): (Task<Void, Never>?, AVAudioPlayer?) = lock.withLock {
+                (requestTask, self.player)
+            }
+
+            task?.cancel()
+            try? runOnMain {
+                player?.stop()
+            }
+            finish(.failure(SaySpeechError.cancelled))
+        }
+
+        func wait() async throws {
+            try await withCheckedThrowingContinuation { cont in
+                let immediate: Result<Void, Error>? = lock.withLock {
+                    if let terminalResult {
+                        return terminalResult
+                    }
+                    continuation = cont
+                    return nil
+                }
+
+                if let immediate {
+                    cont.resume(with: immediate)
+                }
+            }
+        }
+
+        private func performRequest() async {
+            do {
+                let voiceID = try await resolveVoiceID()
+                let request = try buildTTSRequest(voiceID: voiceID)
+                let (data, response) = try await session.data(for: request)
+                try Task.checkCancellation()
+                try validateTTSResponse(response: response, data: data)
+                try startPlayback(with: data)
+            } catch is CancellationError {
+                finish(.failure(SaySpeechError.cancelled))
+            } catch {
+                finish(.failure(error))
+            }
+        }
+
+        private func resolveVoiceID() async throws -> String {
+            if let voiceHint = voiceHint?.trimmingCharacters(in: .whitespacesAndNewlines), !voiceHint.isEmpty {
+                if looksLikeVoiceID(voiceHint) {
+                    return voiceHint
+                }
+                if let matchedID = try await resolveVoiceIDByName(voiceHint) {
+                    return matchedID
+                }
+                return voiceHint
+            }
+
+            if let preferredVoiceID, !preferredVoiceID.isEmpty {
+                return preferredVoiceID
+            }
+
+            if let cached = SaySpeech.defaultVoiceCacheLock.withLock({ SaySpeech.cachedDefaultElevenLabsVoiceID }) {
+                return cached
+            }
+
+            let voices = try await fetchVoices()
+            guard let firstVoice = voices.first else {
+                throw SaySpeechError.elevenLabsNoVoicesAvailable
+            }
+            SaySpeech.defaultVoiceCacheLock.withLock {
+                SaySpeech.cachedDefaultElevenLabsVoiceID = firstVoice.voice_id
+            }
+            return firstVoice.voice_id
+        }
+
+        private func resolveVoiceIDByName(_ voiceName: String) async throws -> String? {
+            let voices = try await fetchVoices()
+            let lowered = voiceName.lowercased()
+
+            if let exact = voices.first(where: { $0.name.lowercased() == lowered }) {
+                return exact.voice_id
+            }
+
+            if let partial = voices.first(where: { $0.name.lowercased().contains(lowered) }) {
+                return partial.voice_id
+            }
+
+            return nil
+        }
+
+        private func fetchVoices() async throws -> [VoicesResponse.Voice] {
+            var request = URLRequest(url: SaySpeech.elevenLabsBaseURL.appending(path: "/v1/voices"))
+            request.httpMethod = "GET"
+            request.timeoutInterval = 30
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
+
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw SaySpeechError.invalidElevenLabsResponse
+            }
+            guard (200 ... 299).contains(httpResponse.statusCode) else {
+                throw SaySpeechError.elevenLabsRequestFailed(
+                    statusCode: httpResponse.statusCode,
+                    message: responseMessage(from: data)
+                )
+            }
+
+            let parsed = try JSONDecoder().decode(VoicesResponse.self, from: data)
+            return parsed.voices
+        }
+
+        private func buildTTSRequest(voiceID: String) throws -> URLRequest {
+            var request = URLRequest(
+                url: SaySpeech.elevenLabsBaseURL.appending(path: "/v1/text-to-speech/\(voiceID)")
+            )
+            request.httpMethod = "POST"
+            request.timeoutInterval = 90
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+            request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
+
+            let speed = mapWordsPerMinuteToElevenLabsSpeed(wordsPerMinute)
+            let payload = TTSRequestPayload(
+                text: text,
+                model_id: SaySpeech.elevenLabsDefaultModelID,
+                output_format: SaySpeech.elevenLabsDefaultOutputFormat,
+                voice_settings: .init(speed: speed)
+            )
+            request.httpBody = try JSONEncoder().encode(payload)
+            return request
+        }
+
+        private func validateTTSResponse(response: URLResponse, data: Data) throws {
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw SaySpeechError.invalidElevenLabsResponse
+            }
+
+            guard (200 ... 299).contains(httpResponse.statusCode) else {
+                throw SaySpeechError.elevenLabsRequestFailed(
+                    statusCode: httpResponse.statusCode,
+                    message: responseMessage(from: data)
+                )
+            }
+
+            guard !data.isEmpty else {
+                throw SaySpeechError.invalidElevenLabsResponse
+            }
+        }
+
+        private func responseMessage(from data: Data) -> String {
+            let text = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return text.isEmpty ? "No response body" : text
+        }
+
+        private func startPlayback(with data: Data) throws {
+            let audioPlayer = try runOnMain { try AVAudioPlayer(data: data) }
+
+            try runOnMain {
+                audioPlayer.delegate = self
+                audioPlayer.prepareToPlay()
+                guard audioPlayer.play() else {
+                    throw SaySpeechError.audioPlaybackFailed
+                }
+            }
+
+            lock.withLock {
+                player = audioPlayer
+            }
+        }
+
+        private func runOnMain<T>(_ action: () throws -> T) throws -> T {
+            if Thread.isMainThread {
+                return try action()
+            }
+            return try DispatchQueue.main.sync(execute: action)
+        }
+
+        private func mapWordsPerMinuteToElevenLabsSpeed(_ wordsPerMinute: Int?) -> Double {
+            let wpm = wordsPerMinute ?? SaySpeech.elevenLabsDefaultWPM
+            let rawSpeed = Double(wpm) / Double(SaySpeech.elevenLabsDefaultWPM)
+            return min(max(rawSpeed, 0.5), 2.0)
+        }
+
+        private func finish(_ result: Result<Void, Error>) {
+            let continuationToResume: CheckedContinuation<Void, Error>? = lock.withLock {
+                guard terminalResult == nil else { return nil }
+                terminalResult = result
+                running = false
+
+                let cont = continuation
+                continuation = nil
+                requestTask = nil
+                player = nil
+                return cont
+            }
+
+            continuationToResume?.resume(with: result)
+        }
+
+        private func looksLikeVoiceID(_ value: String) -> Bool {
+            value.count >= 15 && !value.contains(" ")
+        }
+
+        func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+            finish(.success(()))
+        }
+
+        func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+            finish(.failure(error ?? SaySpeechError.audioPlaybackFailed))
+        }
     }
 
-    // MARK: - Public
     func play(
         _ text: String,
         voice: String? = nil,
         rate: Int? = nil
     ) throws -> Playback {
-        let provider = Self.preferredProvider()
-
-        if provider == .sag,
-           let sagURL = Self.sagExecutableURL(),
-           let apiKey = (try? Self.loadSAGAPIKey())
-        {
-            return try playSAG(text, voice: voice, rate: rate, sagURL: sagURL, apiKey: apiKey)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw SaySpeechError.emptyText
         }
 
-        // Fallback (default): macOS say.
-        return try playMacOSSay(text, voice: voice, rate: rate)
+        let provider = Self.preferredProvider()
+
+        if provider == .elevenLabs {
+            guard let apiKey = (try? Self.loadElevenLabsAPIKey())?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !apiKey.isEmpty else
+            {
+                throw SaySpeechError.missingElevenLabsAPIKey
+            }
+            return playElevenLabs(trimmed, voice: voice, rate: rate, apiKey: apiKey)
+        }
+
+        return try playMacOS(trimmed, voice: voice, rate: rate)
     }
 
-    // MARK: - macOS say
-    private func playMacOSSay(
+    private func playMacOS(
         _ text: String,
         voice: String?,
         rate: Int?
     ) throws -> Playback {
-        // We run the speech command through a small watchdog wrapper so that if this app crashes/exits,
-        // the wrapper observes EOF on stdin (a pipe held open by this app) and terminates the child.
-        //
-        // This is the closest thing to a "kill child on parent death" behavior on macOS
-        // without relying on private APIs or a persistent helper daemon.
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        let utterance = AVSpeechUtterance(string: text)
 
-        let lifetimePipe = Pipe()
-        process.standardInput = lifetimePipe
-
-        let textFileURL = try writeTempTextFile(text)
-
-        let script = Self.sayWrapperPython
-
-        var args: [String] = ["-c", script, "--"]
-        args.append((voice?.isEmpty ?? true) ? "" : (voice ?? ""))
-        args.append(rate.map(String.init) ?? "")
-        args.append(textFileURL.path)
-        process.arguments = args
-
-        // Avoid inheriting unexpected stdio state.
-        process.standardOutput = nil
-        process.standardError = nil
-
-        do {
-            try process.run()
-        } catch {
-            try? FileManager.default.removeItem(at: textFileURL)
-            throw SaySpeechError.failedToStart(underlying: error)
+        if let voice, !voice.isEmpty {
+            guard let resolvedVoice = resolveMacOSVoice(for: voice) else {
+                throw SaySpeechError.unavailableVoice(voice)
+            }
+            utterance.voice = resolvedVoice
+        } else if let bestVoice = bestAvailableMacOSVoice(for: text) {
+            utterance.voice = bestVoice
         }
 
-        return Playback(
-            id: UUID(),
-            process: process,
-            lifetimeWriteHandle: lifetimePipe.fileHandleForWriting,
-            cleanupURLs: [textFileURL]
-        )
+        if let rate {
+            utterance.rate = mapWordsPerMinuteToAVRate(rate)
+        }
+
+        let session = SpeechSession(utterance: utterance)
+        session.start()
+        return Playback(id: UUID(), controller: session)
     }
 
-    // MARK: - SAG (ElevenLabs)
-    private func playSAG(
+    private func playElevenLabs(
         _ text: String,
         voice: String?,
         rate: Int?,
-        sagURL: URL,
         apiKey: String
-    ) throws -> Playback {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-
-        let lifetimePipe = Pipe()
-        process.standardInput = lifetimePipe
-
-        let textFileURL = try writeTempTextFile(text)
-
-        // Prefer env var over CLI args so the API key doesn't appear in argv.
-        var env = ProcessInfo.processInfo.environment
-        env["ELEVENLABS_API_KEY"] = apiKey
-        process.environment = env
-
-        let script = Self.sagWrapperPython
-
-        var args: [String] = ["-c", script, "--"]
-        args.append(sagURL.path)
-        args.append((voice?.isEmpty ?? true) ? "" : (voice ?? ""))
-        args.append(rate.map(String.init) ?? "")
-        args.append(textFileURL.path)
-        process.arguments = args
-
-        // Avoid inheriting unexpected stdio state.
-        process.standardOutput = nil
-        process.standardError = nil
-
-        do {
-            try process.run()
-        } catch {
-            try? FileManager.default.removeItem(at: textFileURL)
-            throw SaySpeechError.failedToStart(underlying: error)
-        }
-
-        return Playback(
-            id: UUID(),
-            process: process,
-            lifetimeWriteHandle: lifetimePipe.fileHandleForWriting,
-            cleanupURLs: [textFileURL]
+    ) -> Playback {
+        let session = ElevenLabsSession(
+            text: text,
+            voiceHint: voice,
+            wordsPerMinute: rate,
+            apiKey: apiKey,
+            preferredVoiceID: Self.preferredElevenLabsVoiceID()
         )
+        session.start()
+        return Playback(id: UUID(), controller: session)
     }
 
-    // MARK: - Keychain (SAG API key)
-    private static let keychainService = "com.zats.Mouth"
-    private static let sagAPIKeyAccount = "sag-elevenlabs-api-key"
+    private func resolveMacOSVoice(for rawValue: String) -> AVSpeechSynthesisVoice? {
+        if let byIdentifier = AVSpeechSynthesisVoice(identifier: rawValue) {
+            return byIdentifier
+        }
 
-    // Internal so Settings UI can show a filled SecureField when a key exists.
-    static func loadSAGAPIKey() throws -> String? {
-        try loadKeychainString(service: keychainService, account: sagAPIKeyAccount)
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+
+        return AVSpeechSynthesisVoice.speechVoices().first {
+            $0.name.lowercased() == normalized
+                || $0.language.lowercased() == normalized
+                || $0.identifier.lowercased() == normalized
+        }
+    }
+
+    private func bestAvailableMacOSVoice(for text: String) -> AVSpeechSynthesisVoice? {
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+        guard !voices.isEmpty else { return nil }
+
+        let preferredLanguageCodes = prioritizedLanguageCodes(for: text)
+        let rankedVoices = voices
+            .map { voice in
+                (voice: voice, score: score(voice: voice, preferredLanguageCodes: preferredLanguageCodes))
+            }
+            .sorted { lhs, rhs in
+                if lhs.score != rhs.score {
+                    return lhs.score > rhs.score
+                }
+                return lhs.voice.identifier < rhs.voice.identifier
+            }
+
+        return rankedVoices.first?.voice
+    }
+
+    private func prioritizedLanguageCodes(for text: String) -> [String] {
+        var prioritized: [String] = []
+
+        if let detected = NLLanguageRecognizer.dominantLanguage(for: text)?.rawValue {
+            prioritized.append(detected)
+        }
+
+        prioritized.append(AVSpeechSynthesisVoice.currentLanguageCode())
+        prioritized.append(contentsOf: Locale.preferredLanguages)
+
+        var seen = Set<String>()
+        var normalized: [String] = []
+        for code in prioritized {
+            let normalizedCode = normalizeLanguageCode(code)
+            guard !normalizedCode.isEmpty else { continue }
+            guard seen.insert(normalizedCode).inserted else { continue }
+            normalized.append(normalizedCode)
+        }
+        return normalized
+    }
+
+    private func score(voice: AVSpeechSynthesisVoice, preferredLanguageCodes: [String]) -> Int {
+        var score = 0
+
+        switch voice.quality {
+        case .premium:
+            score += 1200
+        case .enhanced:
+            score += 800
+        default:
+            score += 400
+        }
+
+        if voice.voiceTraits.contains(.isNoveltyVoice) {
+            score -= 1200
+        } else {
+            score += 120
+        }
+
+        let identifier = voice.identifier.lowercased()
+        if identifier.contains(".eloquence.") {
+            score -= 900
+        }
+        if identifier.contains(".speech.synthesis.voice.") {
+            score -= 900
+        }
+        if identifier.contains("siri") {
+            score += 300
+        }
+
+        let voiceLanguage = normalizeLanguageCode(voice.language)
+        let voicePrimaryLanguage = primaryLanguage(from: voiceLanguage)
+
+        for (index, preferredLanguage) in preferredLanguageCodes.enumerated() {
+            let priorityWeight = max(0, 80 - (index * 10))
+            if voiceLanguage == preferredLanguage {
+                score += 350 + priorityWeight
+                break
+            }
+
+            let preferredPrimaryLanguage = primaryLanguage(from: preferredLanguage)
+            if !preferredPrimaryLanguage.isEmpty,
+               preferredPrimaryLanguage == voicePrimaryLanguage
+            {
+                score += 220 + priorityWeight
+                break
+            }
+        }
+
+        return score
+    }
+
+    private func normalizeLanguageCode(_ code: String) -> String {
+        code
+            .replacingOccurrences(of: "_", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private func primaryLanguage(from code: String) -> String {
+        normalizeLanguageCode(code).split(separator: "-").first.map(String.init) ?? ""
+    }
+
+    private func mapWordsPerMinuteToAVRate(_ wordsPerMinute: Int) -> Float {
+        let clampedWordsPerMinute = min(max(wordsPerMinute, 80), 450)
+        let normalized = Float(clampedWordsPerMinute - 80) / Float(450 - 80)
+
+        return AVSpeechUtteranceMinimumSpeechRate
+            + normalized * (AVSpeechUtteranceMaximumSpeechRate - AVSpeechUtteranceMinimumSpeechRate)
     }
 
     private static func loadKeychainString(service: String, account: String) throws -> String? {
@@ -322,8 +741,8 @@ final class SaySpeech {
         guard let data = item as? Data else {
             return nil
         }
-        let s = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (s?.isEmpty ?? true) ? nil : s
+        let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (value?.isEmpty ?? true) ? nil : value
     }
 
     private static func upsertKeychainString(_ value: String?, service: String, account: String) throws {
@@ -365,229 +784,4 @@ final class SaySpeech {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(addStatus), userInfo: nil)
         }
     }
-
-    // MARK: - SAG installation
-    private static var sagExecutableResolved = false
-    private static var sagExecutableCached: URL?
-
-    static func sagExecutableURL() -> URL? {
-        if sagExecutableResolved {
-            return sagExecutableCached
-        }
-        sagExecutableResolved = true
-        sagExecutableCached = resolveExecutable(named: "sag")
-        return sagExecutableCached
-    }
-
-    private static func resolveExecutable(named name: String) -> URL? {
-        let fm = FileManager.default
-
-        var candidates: [String] = []
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
-            candidates.append(contentsOf: path.split(separator: ":").map(String.init))
-        }
-
-        // GUI apps sometimes don't inherit full shell PATH; add common Homebrew locations.
-        candidates.append("/opt/homebrew/bin")
-        candidates.append("/usr/local/bin")
-        candidates.append("/usr/bin")
-
-        var seen = Set<String>()
-        for dir in candidates where !dir.isEmpty {
-            if seen.contains(dir) { continue }
-            seen.insert(dir)
-            let url = URL(fileURLWithPath: dir).appendingPathComponent(name)
-            if fm.isExecutableFile(atPath: url.path) {
-                return url
-            }
-        }
-        return nil
-    }
-
-    // Python wrapper arguments (after "--"):
-    // 1) voice (or ""), 2) rate (or ""), 3) text_path
-    private static let sayWrapperPython = #"""
-import os
-import select
-import signal
-import subprocess
-import sys
-import time
-
-def main() -> int:
-    args = sys.argv
-    if "--" in args:
-        idx = args.index("--")
-        args = args[idx+1:]
-    else:
-        args = args[1:]
-
-    if len(args) != 3:
-        return 2
-
-    voice = args[0]
-    rate = args[1]
-    text_path = args[2]
-
-    if not os.path.exists(text_path):
-        return 3
-
-    def cleanup():
-        try:
-            os.remove(text_path)
-        except Exception:
-            pass
-
-    say_args = ["/usr/bin/say"]
-    if voice:
-        say_args += ["-v", voice]
-    if rate:
-        say_args += ["-r", rate]
-    # Read from file to avoid argv length limits and option parsing surprises.
-    say_args += ["-f", text_path]
-
-    # stdin is inherited from this wrapper (a pipe owned by the parent app). We set say's stdin
-    # to DEVNULL to ensure it doesn't accidentally interact with our lifetime pipe.
-    p = subprocess.Popen(say_args, stdin=subprocess.DEVNULL)
-
-    def handle_term(signum, frame):
-        try:
-            p.terminate()
-        except Exception:
-            pass
-
-    signal.signal(signal.SIGTERM, handle_term)
-    signal.signal(signal.SIGINT, handle_term)
-
-    while True:
-        rc = p.poll()
-        if rc is not None:
-            cleanup()
-            return int(rc)
-
-        # If the parent app exits/crashes, our stdin pipe will close and become readable with EOF.
-        try:
-            r, _, _ = select.select([sys.stdin], [], [], 0)
-            if r:
-                b = os.read(sys.stdin.fileno(), 1)
-                if b == b"":
-                    try:
-                        p.terminate()
-                    except Exception:
-                        pass
-                    for _ in range(10):
-                        rc = p.poll()
-                        if rc is not None:
-                            cleanup()
-                            return int(rc)
-                        time.sleep(0.05)
-                    try:
-                        p.kill()
-                    except Exception:
-                        pass
-                    cleanup()
-                    return 0
-        except Exception:
-            # If we can't read stdin for any reason, fall back to not force-stopping.
-            pass
-
-        time.sleep(0.1)
-
-if __name__ == "__main__":
-    sys.exit(main())
-"""#
-
-    // Python wrapper arguments (after "--"):
-    // 1) sag_path, 2) voice (or ""), 3) rate (or ""), 4) text_path
-    private static let sagWrapperPython = #"""
-import os
-import select
-import signal
-import subprocess
-import sys
-import time
-
-def main() -> int:
-    args = sys.argv
-    if "--" in args:
-        idx = args.index("--")
-        args = args[idx+1:]
-    else:
-        args = args[1:]
-
-    if len(args) != 4:
-        return 2
-
-    sag_path = args[0]
-    voice = args[1]
-    rate = args[2]
-    text_path = args[3]
-
-    # SAG reads from file, so don't pre-decode; we just validate it exists early.
-    if not os.path.exists(text_path):
-        return 3
-
-    def cleanup():
-        try:
-            os.remove(text_path)
-        except Exception:
-            pass
-
-    sag_args = [sag_path, "speak"]
-    if voice:
-        sag_args += ["-v", voice]
-    if rate:
-        sag_args += ["-r", rate]
-    sag_args += ["-f", text_path]
-
-    # stdin is inherited from this wrapper (a pipe owned by the parent app). We set sag's stdin
-    # to DEVNULL to ensure it doesn't accidentally interact with our lifetime pipe.
-    p = subprocess.Popen(sag_args, stdin=subprocess.DEVNULL)
-
-    def handle_term(signum, frame):
-        try:
-            p.terminate()
-        except Exception:
-            pass
-
-    signal.signal(signal.SIGTERM, handle_term)
-    signal.signal(signal.SIGINT, handle_term)
-
-    while True:
-        rc = p.poll()
-        if rc is not None:
-            cleanup()
-            return int(rc)
-
-        # If the parent app exits/crashes, our stdin pipe will close and become readable with EOF.
-        try:
-            r, _, _ = select.select([sys.stdin], [], [], 0)
-            if r:
-                b = os.read(sys.stdin.fileno(), 1)
-                if b == b"":
-                    try:
-                        p.terminate()
-                    except Exception:
-                        pass
-                    for _ in range(10):
-                        rc = p.poll()
-                        if rc is not None:
-                            cleanup()
-                            return int(rc)
-                        time.sleep(0.05)
-                    try:
-                        p.kill()
-                    except Exception:
-                        pass
-                    cleanup()
-                    return 0
-        except Exception:
-            # If we can't read stdin for any reason, fall back to not force-stopping.
-            pass
-
-        time.sleep(0.1)
-
-if __name__ == "__main__":
-    sys.exit(main())
-"""#
 }
