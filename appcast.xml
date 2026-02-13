@@ -3,6 +3,15 @@
     <channel>
         <title>Mouth</title>
         <item>
+            <title>1.7.2</title>
+            <pubDate>Fri, 13 Feb 2026 18:02:15 -0500</pubDate>
+            <link>https://raw.githubusercontent.com/zats/Mouth/main/appcast.xml</link>
+            <sparkle:version>13</sparkle:version>
+            <sparkle:shortVersionString>1.7.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.2</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/zats/Mouth/releases/download/v1.7.2/Mouth-1.7.2.zip" length="6904838" type="application/octet-stream" sparkle:edSignature="mOZaJIo2hawVgQcTTDex80XIGc1bkvV7Xew9I4lCa7Ok1RCjb/L/HuAGYjySEtazQC2d7x7xIsIpZWIN0f/hBA=="/>
+        </item>
+        <item>
             <title>1.7.1</title>
             <pubDate>Fri, 13 Feb 2026 14:42:54 -0500</pubDate>
             <link>https://raw.githubusercontent.com/zats/Mouth/main/appcast.xml</link>
@@ -19,15 +28,6 @@
             <sparkle:shortVersionString>1.7.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.2</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/zats/Mouth/releases/download/v1.7.0/Mouth-1.7.0.zip" length="6883688" type="application/octet-stream" sparkle:edSignature="s4PtA5NirCi4xsT79bOPRC95315NqRcKeVOsBKNhX+SlicLInksyoKQYkDN0cPgE3WglmVNcv3MMUwRU70RsAA=="/>
-        </item>
-        <item>
-            <title>1.6.0</title>
-            <pubDate>Thu, 12 Feb 2026 12:49:35 -0500</pubDate>
-            <link>https://raw.githubusercontent.com/zats/Mouth/main/appcast.xml</link>
-            <sparkle:version>10</sparkle:version>
-            <sparkle:shortVersionString>1.6.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>26.2</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/zats/Mouth/releases/download/v1.6.0/Mouth-1.6.0.zip" length="6872424" type="application/octet-stream" sparkle:edSignature="E55AYCSwSYePX9y+OpuJWxJDI+xW43hqir9mCzBhcCnq3w4++AvtghWAR1tKJHcT6Wb9t3R47i9FLzfcmsLCBg=="/>
         </item>
     </channel>
 </rss>
