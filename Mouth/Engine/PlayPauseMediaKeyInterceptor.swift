@@ -117,8 +117,8 @@ final class PlayPauseMediaKeyInterceptor {
             return Unmanaged.passUnretained(event)
         }
 
-        // 0xA is keyDown; 0xB is keyUp (matches MediaKeyController).
-        if keyState == 0xA {
+        // 0xA is the usual keyDown; some systems report 0x00 for the down edge.
+        if keyState == 0xA || keyState == 0x00 {
             onPlayPauseKeyDown()
         }
 

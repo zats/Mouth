@@ -22,6 +22,7 @@ final class CodexVoiceAnnouncer {
     private var queue: [Item] = []
     private var runner: Task<Void, Never>?
 
+    private var currentDelimiterPlayback: AppSound.Playback?
     private var currentSpeech: SaySpeech.Playback?
     private var currentItem: Item?
 
@@ -102,6 +103,8 @@ final class CodexVoiceAnnouncer {
 
     func stopAll() {
         queue.removeAll()
+        currentDelimiterPlayback?.cancel()
+        currentDelimiterPlayback = nil
         currentSpeech?.cancel()
         currentSpeech = nil
         runner?.cancel()
@@ -148,8 +151,14 @@ final class CodexVoiceAnnouncer {
             // Delimiter sound before each spoken message.
             do {
                 let p = try sound.play(fileURL: delimiterSoundURL())
+                currentDelimiterPlayback = p
                 try await p.wait()
+                currentDelimiterPlayback = nil
             } catch {
+                currentDelimiterPlayback = nil
+                if error is CancellationError {
+                    return
+                }
                 fatalError("\(error)")
             }
 
